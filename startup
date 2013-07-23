@@ -1,0 +1,15 @@
+-- Load stacktrace API and install tpcall as replacement for pcall.
+os.loadAPI("apis/stacktrace")
+_G.pcall = stacktrace.tpcall
+
+-- Load startup API and perform startup.
+os.loadAPI("apis/startup")
+startup.run()
+
+-- Artificial pause to allow getting a glimpse of the startup log. This is
+-- really just to have some visual confirmation that the startup scripts ran.
+os.sleep(0.5)
+
+-- Load daemon API and install it.
+os.loadAPI("apis/daemon")
+daemon.install()

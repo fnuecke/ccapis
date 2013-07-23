@@ -9,8 +9,21 @@
     failure, instead of just the exact error location.
 ]]
 
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Stacktrace API                                                            --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
 -- Keep a local copy of pcall, in case we get installed as pcall replacement.
 local pcall, xpcall = pcall, xpcall
+
+-------------------------------------------------------------------------------
+-- Public API                                                                --
+-------------------------------------------------------------------------------
+
+-- The current version of the API.
+version = "1.0"
 
 --[[
     Custom protected function caller that produces a traceback on errors.

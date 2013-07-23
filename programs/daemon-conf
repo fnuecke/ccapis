@@ -10,72 +10,18 @@
 os.loadAPI("apis/daemon")
 
 -------------------------------------------------------------------------------
--- Command logic                                                             --
--------------------------------------------------------------------------------
-
--- List of command line arguments, to access them via indexes without select().
-local args = {...}
-
--- Forward declaration of table containing commands.
-local commands
-
---[[
-    Looks for a command with the specified name in the list of commands.
-
-    @param name the name of the command to look for.
-    @return the command on success; nil otherwise.
-]]
-local function findCommand(name)
-    if name then
-        name = string.lower(name)
-        for _,command in ipairs(commands) do
-            if command.name == name then
-                return command
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    Automatically generates a usage description, based on the command list.
-]]
-local function usage()
-    print("Usage: " .. shell.getRunningProgram() .. " <command> <args...>")
-    local commandNames = {}
-    for _,v in ipairs(commands) do
-        table.insert(commandNames, v.name)
-    end
-    print("Commands: " .. table.concat(commandNames, ", "))
-    print("Use '" .. shell.getRunningProgram() ..
-          " help command' to get more information on a specific command.")
-end
-
-local function run()
-    local command = findCommand(args[1])
-    if #args == 0 or command == nil then
-        usage()
-    else
-        table.remove(args, 1)
-        command.call(unpack(args))
-    end
-end
-
--------------------------------------------------------------------------------
 -- Commands                                                                  --
 -------------------------------------------------------------------------------
 
--- Forward declation for helper function namespace.
-local private = {}
-
--- No named keys to keep the order intact.
+-- List of all commands of this program. Keep the variable declaration
+-- separate, so that it can be referenced in the help callback.
+local commands
 commands = {
-    {
-        name = "help",
+    help = {
         help = "Shows the help text for the specified command.",
         args = {{"command", "The command to get help on."}},
         call = function(name)
-            local command = findCommand(name)
+            local command = commands[name]
             if command == nil then
                 print("No such command.")
             else
@@ -89,8 +35,7 @@ commands = {
             end
         end
     },
-    {
-        name = "install",
+    install = {
         help = "Sets up the daemon driver which runs daemons.",
         call = function()
             if daemon.install() then
@@ -100,8 +45,7 @@ commands = {
             end
         end
     },
-    {
-        name = "uninstall",
+    uninstall = {
         help = "Stops running daemons and the daemon driver.",
         call = function()
             if daemon.uninstall() then
@@ -111,8 +55,7 @@ commands = {
             end
         end
     },
-    {
-        name = "start",
+    start = {
         help = "Starts a daemon if it isn't running.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
@@ -124,8 +67,7 @@ commands = {
             end
         end
     },
-    {
-        name = "stop",
+    stop = {
         help = "Tries to stop a daemon if it is running.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
@@ -136,8 +78,7 @@ commands = {
             end
         end
     },
-    {
-        name = "kill",
+    kill = {
         help = "Forces a daemon to stop.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
@@ -148,8 +89,7 @@ commands = {
             end
         end
     },
-    {
-        name = "list",
+    list = {
         help = "Lists all daemons and their status.",
         call = function()
             for name in daemon.iter() do
@@ -160,8 +100,7 @@ commands = {
             end
         end
     },
-    {
-        name = "add",
+    add = {
         help = "Adds a new daemon by copying a file.",
         args = {
             {"name", "The name of the daemon."},
@@ -176,16 +115,18 @@ commands = {
             end
         end
     },
-    {
-        name = "remove",
+    remove = {
         help = "Removes a daemon.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
-            daemon.remove(name)
+            if daemon.remove(name) then
+                print("Successfully removed daemon '" .. name .. '".')
+            else
+                print("Could not remove daemon '" .. name .. "'.")
+            end
         end
     },
-    {
-        name = "enable",
+    enable = {
         help = "Enable a daemon.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
@@ -196,8 +137,7 @@ commands = {
             end
         end
     },
-    {
-        name = "disable",
+    disable = {
         help = "Disable a daemon.",
         args = {{"name", "The name of the daemon."}},
         call = function(name)
@@ -211,7 +151,41 @@ commands = {
 }
 
 -------------------------------------------------------------------------------
+-- Command logic                                                             --
+-------------------------------------------------------------------------------
+
+--[[
+    Automatically generates a usage description, based on the command list.
+]]
+local function usage()
+    local programName = fs.getName(shell.getRunningProgram())
+    print("Usage: " .. programName .. " <command> <args...>")
+    local names = {}
+    for name, _ in pairs(commands) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    print("Commands: " .. table.concat(names, ", "))
+    print("Use '" .. programName ..
+          " help <command>' to get more information on a specific command.")
+end
+
+--[[
+    Handles command line arguments and executes the corresponding command.
+]]
+local function run(...)
+    local args = {...}
+    local command = commands[args[1]]
+    if #args == 0 or command == nil then
+        usage()
+    else
+        table.remove(args, 1)
+        command.call(unpack(args))
+    end
+end
+
+-------------------------------------------------------------------------------
 -- Initialization                                                            --
 -------------------------------------------------------------------------------
 
-run()
+run(...)

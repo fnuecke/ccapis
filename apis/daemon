@@ -91,7 +91,7 @@ function addFile(name, path)
 end
 
 --[[
-    Adds a new daemon by creating a file with the specified code into the
+    Adds a new daemon by creating a file with the specified code in the
     daemon folder.
 
     @param name the name for the daemon.

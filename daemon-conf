@@ -1,0 +1,217 @@
+--[[
+    DFC - Daemons For Computers - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This script allows interacting with the daemon API via the shell.
+]]
+
+os.loadAPI("/daemon")
+
+-------------------------------------------------------------------------------
+-- Command logic                                                             --
+-------------------------------------------------------------------------------
+
+-- List of command line arguments, to access them via indexes without select().
+local args = {...}
+
+-- Forward declaration of table containing commands.
+local commands
+
+--[[
+    Looks for a command with the specified name in the list of commands.
+
+    @param name the name of the command to look for.
+    @return the command on success; nil otherwise.
+]]
+local function findCommand(name)
+    if name then
+        name = string.lower(name)
+        for _,command in ipairs(commands) do
+            if command.name == name then
+                return command
+            end
+        end
+    end
+    return nil
+end
+
+--[[
+    Automatically generates a usage description, based on the command list.
+]]
+local function usage()
+    print("Usage: " .. shell.getRunningProgram() .. " <command> <args...>")
+    local commandNames = {}
+    for _,v in ipairs(commands) do
+        table.insert(commandNames, v.name)
+    end
+    print("Commands: " .. table.concat(commandNames, ", "))
+    print("Use '" .. shell.getRunningProgram() ..
+          " help command' to get more information on a specific command.")
+end
+
+local function run()
+    local command = findCommand(args[1])
+    if #args == 0 or command == nil then
+        usage()
+    else
+        table.remove(args, 1)
+        command.call(unpack(args))
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Commands                                                                  --
+-------------------------------------------------------------------------------
+
+-- Forward declation for helper function namespace.
+local private = {}
+
+-- No named keys to keep the order intact.
+commands = {
+    {
+        name = "help",
+        help = "Shows the help text for the specified command.",
+        args = {{"command", "The command to get help on."}},
+        call = function(name)
+            local command = findCommand(name)
+            if command == nil then
+                print("No such command.")
+            else
+                print(command.help)
+                if command.args and #command.args > 0 then
+                    print("Parameters:")
+                    for _, arg in ipairs(command.args) do
+                        print(" " .. arg[1] .. " - " .. arg[2])
+                    end
+                end
+            end
+        end
+    },
+    {
+        name = "install",
+        help = "Sets up the daemon driver which runs daemons.",
+        call = function()
+            if daemon.install() then
+                print("Successfully installed the daemon driver.")
+            else
+                print("Daemon driver is already installed.")
+            end
+        end
+    },
+    {
+        name = "uninstall",
+        help = "Stops running daemons and the daemon driver.",
+        call = function()
+            if daemon.uninstall() then
+                print("Successfully uninstalled the daemon driver.")
+            else
+                print("Daemon driver is not installed.")
+            end
+        end
+    },
+    {
+        name = "start",
+        help = "Starts a daemon if it isn't running.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            local success, reason = daemon.start(name)
+            if success then
+                print("Successfully started/ran daemon '" .. name .. "'.")
+            else
+                print("Failed starting daemon '" .. name "': " .. reason)
+            end
+        end
+    },
+    {
+        name = "stop",
+        help = "Tries to stop a daemon if it is running.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            if daemon.stop(name) then
+                print("Successfully stopped daemon '" .. name .. "'.")
+            else
+                print("Failed stopping daemon, 'terminate' event was ignored.")
+            end
+        end
+    },
+    {
+        name = "kill",
+        help = "Forces a daemon to stop.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            if daemon.kill(name) then
+                print("Successfully killed daemon '" .. name .. "'.")
+            else
+                print("Failed killing daemon '" .. name .. "' (not running).")
+            end
+        end
+    },
+    {
+        name = "list",
+        help = "Lists all daemons and their status.",
+        call = function()
+            for name in daemon.iter() do
+                print(string.format("%s (%s, %s)",
+                    name,
+                    daemon.isEnabled(name) and "enabled" or "disabled",
+                    daemon.isRunning(name) and "running" or "stopped"))
+            end
+        end
+    },
+    {
+        name = "add",
+        help = "Adds a new daemon by copying a file.",
+        args = {
+            {"name", "The name of the daemon."},
+            {"path", "The path to the file."}
+        },
+        call = function(name, path)
+            local success, reason = daemon.addFile(name, path)
+            if success then
+                print("Successfully installed daemon.")
+            else
+                print("Failed installing daemon: " .. reason)
+            end
+        end
+    },
+    {
+        name = "remove",
+        help = "Removes a daemon.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            daemon.remove(name)
+        end
+    },
+    {
+        name = "enable",
+        help = "Enable a daemon.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            if daemon.enable(name) then
+                print("Daemon '" .. name .. "' is now enabled.")
+            else
+                print("Could not enable daemon '" .. name .. "'.")
+            end
+        end
+    },
+    {
+        name = "disable",
+        help = "Disable a daemon.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            if daemon.disable(name) then
+                print("Daemon '" .. name .. "' is now disabled.")
+            else
+                print("Could not disable daemon '" .. name .. "'.")
+            end
+        end
+    }
+}
+
+-------------------------------------------------------------------------------
+-- Initialization                                                            --
+-------------------------------------------------------------------------------
+
+run()

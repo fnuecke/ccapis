@@ -1,0 +1,823 @@
+--[[
+    DFC - Daemons For Computers - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This API provides daemons/services. Just drop them in the folder as
+    configured in the daemonPath variable (default: /daemons). All scripts in
+    that folder will be started when the API's install() function is called.
+    It allows managing installed daemons, i.e. installing new ones, enabling
+    and disabling existing ones, or removing them completely.
+
+    Daemons should never interact with the terminal directly, since that would
+    interfere with the currently running foreground program (say, the shell).
+    For that reason the global write, print and printError functions are
+    replaced with ones that write to the log file as configured in the logFile
+    variable (default: daemon.log) during the execution of the daemons.
+
+    This API works by hijacking the global coroutine.resume() function. It will
+    forward any calls to unknown threads as-is and will take care of filtering
+    any events for the thread that installed the API, as well as the daemon
+    threads. Note that while resuming any threads it will restore the actual
+    coroutine.restore() function, to avoid recursion.
+]]
+
+-------------------------------------------------------------------------------
+-- Config                                                                    --
+-------------------------------------------------------------------------------
+
+-- The path to the folder containing all daemon scripts.
+local daemonPath = "/daemons"
+
+-- The extension daemon scripts have that should be ignored.
+local disabledPostfix = "disabled"
+
+-- The name of the file to which to log any output that daemons produce.
+local logFile = "/daemon.log"
+
+-- Automatically clear the log file the first time the API is loaded.
+local clearLog = true
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Daemon API                                                                --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- If this API was loaded before, reuse it to avoid losing our internal state.
+if daemon then
+    local env = getfenv()
+    for k, v in pairs(daemon) do
+        env[k] = v
+    end
+    return
+end
+
+-- Internal forward declarations. They have to be declared here so that
+-- functions can access them.
+local state, private
+
+-------------------------------------------------------------------------------
+-- Public API                                                                --
+-------------------------------------------------------------------------------
+
+-- The current version of the API.
+version = "1.0"
+
+--[[
+    Adds a new daemon by copying the specified file into the daemon folder.
+
+    @param name the name for the daemon.
+    @param path the path to the file to copy.
+    @return true if the daemon was installed successfully; (false, reason) if
+        there is no such file or a script with that name already exists.
+]]
+function addFile(name, path)
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
+    assert(type(path) == "string" and path ~= "",
+        "'path' must be a non-empty string")
+
+    if not fs.exists(path) or fs.isDir(path) then
+        return false, "no such file"
+    end
+    if exists(name) then
+        return false, "daemon with that name already exists"
+    end
+
+    fs.copy(path, fs.combine(daemonPath, name))
+    return true
+end
+
+--[[
+    Adds a new daemon by creating a file with the specified code into the
+    daemon folder.
+
+    @param name the name for the daemon.
+    @param code the code of the daemon script.
+    @return true if the daemon was installed successfully; (false, reason) if a
+        script with that name already exists.
+]]
+function addString(name, code)
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
+    assert(type(code) == "string" and code ~= "",
+        "'code' must be a non-empty string")
+
+    if exists(name) then
+        return false, "daemon with that name already exists"
+    end
+
+    local file = fs.open(fs.combine(daemonPath, name), "w")
+    file.write(code)
+    file.close()
+    return true
+end
+
+--[[
+    Adds a new daemon by registering the specified function.
+
+    Note that this function will be lost when unloading the API; in particular
+    you will have to add it again when the API is loaded anew, for example
+    after rebooting the computer.
+
+    Also note that function daemons will be considered as always enabled, i.e.
+    you cannot disable them, and they will always be automatically run when the
+    API's daemon driver is installed (i.e. install() is called for the first
+    time or after uninstall() was called).
+
+    @param name the name for the daemon.
+    @param callback the function to run as a daemon.
+    @return true if the function was added; false otherwise.
+]]
+function addFunction(name, callback)
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
+    assert(type(callback) == "function",
+        "'callback' must be a function")
+
+    if exists(name) then
+        return false, "daemon with that name already exists"
+    end
+
+    state.functions[name] = callback
+    return true
+end
+
+--[[
+    Checks whether a daemon with the specified name exists.
+
+    @param name the name of the daemon to check for.
+    @return true if such a daemon exists, enabled or disabled; false otherwise.
+]]
+function exists(name)
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
+    return select(1, private.find(name)) or state.functions[name] ~= nil
+end
+
+--[[
+    Remove the daemon with the specified name.
+
+    IMPORTANT: this deletes the actual file from the system if the daemon is
+    defined via one (added via addFile() or addString()).
+
+    @param name the name of the daemon to remove.
+    @return true if the daemon was removed; false otherwise.
+]]
+function remove(name)
+    if not exists(name) then
+        return false
+    end
+    if state.functions[name] then
+        state.functions[name] = nil
+    else
+        local path = fs.combine(daemonPath, name)
+        if not isEnabled(name) then
+            path = path .. "." .. disabledPostfix
+        end
+        fs.delete(path)
+    end
+    return true
+end
+
+--[[
+    Checks whether scripts can be disabled without being deleted.
+
+    @return true if scripts can be disabled/enabled; false otherwise.
+]]
+function canDisableScripts()
+    return disabledPostfix and disabledPostfix ~= ""
+end
+
+--[[
+    Enables the daemon with the specified name.
+
+    This will not start the daemon. It will be enabled, though, so it'll be run
+    automatically when the API is installed the next time.
+
+    @param name the name of the daemon.
+    @return true if the script is or was enabled; false otherwise.
+]]
+function enable(name)
+    if not canDisableScripts() or not exists(name) then
+        return false
+    end
+    if not isEnabled(name) then
+        local pathEnabled = fs.combine(daemonPath, name)
+        local pathDisabled = pathEnabled .. "." .. disabledPostfix
+        fs.move(pathDisabled, pathEnabled)
+    end
+    return true
+end
+
+--[[
+    Disables the daemon with the specified name.
+
+    This will not stop the daemon if it is running. It will, however, not be
+    run automatically when the API is installed the next time.
+
+    @param name the name of the daemon.
+    @return true if the script is or was disabled; false otherwise.
+]]
+function disable(name)
+    if not canDisableScripts() or not exists(name) then
+        return false
+    end
+    if isEnabled(name) and not state.functions[name] then
+        local pathEnabled = fs.combine(daemonPath, name)
+        local pathDisabled = pathEnabled .. "." .. disabledPostfix
+        fs.move(pathEnabled, pathDisabled)
+    end
+    return true
+end
+
+--[[
+    Tests whether the daemon the specified name is enabled.
+
+    @param name the name of the daemon to check.
+    @return true if the daemon is enabled; false otherwise.
+]]
+function isEnabled(name)
+    if not exists(name) then
+        return false
+    end
+    if state.functions[name] then
+        return true
+    end
+    local success, enabled = private.find(name)
+    return success and enabled
+end
+
+--[[
+    Starts the daemon with the specified name.
+
+    Note that you can start disabled daemons. Whether a daemon is enabled or
+    disabled only has an influence on which daemons are automatically started.
+
+    The daemon will start executing immediately, and if it returns or fails it
+    will not be added to the list of running daemons (only if it yields).
+
+    This will automatically install the daemon driver if install() has not been
+    been called yet.
+
+    @param name the name of the daemon.
+    @return true if the daemon was started successfully or is already running;
+        (false, reason) otherwise, where reason is a string.
+]]
+function start(name)
+    -- Make sure the driver is installed.
+    install()
+
+    -- Nothing to do if the daemon is already running.
+    if isRunning(name) then
+        return true
+    end
+
+    -- Try to load the script.
+    local script
+    if state.functions[name] then
+        script = state.functions[name]
+    else
+        local path = fs.combine(daemonPath, name)
+        if not isEnabled(name) then
+            path = path .. "." .. disabledPostfix
+        end
+        local result
+        script, result = loadfile(path)
+        if not script then
+            -- Something is very wrong with this script.
+            return false, result
+        end
+    end
+
+    -- OK, give the script its own environment so it does not interfere with
+    -- other scripts when declaring non-local variables.
+    setfenv(script, setmetatable({}, {__index = _G}))
+    -- Create a coroutine for the script.
+    local thread = coroutine.create(script)
+    -- Run it until it yields the first time.
+    local running, success, result = private.run(name, thread)
+    if not success then
+        -- Some error running the script.
+        return false, result
+    end
+    if running then
+        -- Thread yielded, store it to keep it running.
+        state.running[name] = thread
+        state.filters[name] = result
+        os.queueEvent("daemon", "started", name)
+    end
+    return true
+end
+
+--[[
+    Stops the daemon with the specified name.
+
+    This tries to stop the daemon by sending it a "terminate" event. In case
+    the daemon decides to ignore that event this function will return false.
+    Otherwise it will return true, and the result of running the daemon. This
+    will be true if the daemon exitet cleanly (this includes it quitting by
+    throwing error("Terminated")) or not (any other errors).
+
+    @return (true, success, reason) if the daemon stopped; false otherwise.
+]]
+function stop(name)
+    -- Nothing to do if the daemon isn't running.
+    if not isRunning(name) then
+        return true
+    end
+
+    -- Tell the daemon to terminate. If the daemon behaves correctly, it'll
+    -- throw an error with 'Terminated' as its message upon receiving this
+    -- event (this is what os.pullEvent() does).
+    local running, success, result =
+        private.run(name, state.running[name], "terminate")
+    -- Check if the thread let itself be shut down or whether it did not allow
+    -- termination (ignored the event).
+    if running then
+        return false
+    end
+    -- Thread terminated, so we can remove it from the list.
+    kill(name)
+    if not success and result ~= "Terminated" then
+        -- Some unexpected error while stopping the daemon, log it.
+        private.logPrintError(
+            "Error stopping daemon '" .. name .. "': " .. result)
+    end
+    return true
+end
+
+--[[
+    Terminates the daemon with the specified name unconditionally.
+
+    This will remove the daemon's thread without giving it the chance to end
+    itself gracefully (i.e. without sending it the terminate event first). You
+    should normally try to end a daemon by calling stop() first, and only if
+    that fails resort to kill()ing it.
+
+    @param name the name of the daemon to kill.
+    @return true if the daemon was running and was killed; false otherwise.
+]]
+function kill(name)
+    assert(exists(name), "no such daemon")
+
+    -- Force quit the daemon if it is even running (just remove it from the
+    -- list of running daemons, it'll be garbage collected in time).
+    if not isRunning(name) then
+        return false
+    end
+    state.running[name] = nil
+    state.filters[name] = nil
+    os.queueEvent("daemon", "stopped", name)
+    return true
+end
+
+--[[
+    Checks if the daemon with the specified name is currently running.
+
+    @param name the name of the daemon to check.
+    @return true if the daemon is running; false otherwise.
+]]
+function isRunning(name)
+    assert(exists(name), "no such daemon")
+
+    -- We map daemon names to their coroutines, so we can just check if there's
+    -- an entry for that name in the list of coroutines.
+    return state.running[name] ~= nil
+end
+
+--[[
+    Returns an iterator function over all daemons.
+
+    This will include any known demons, whether they're running or not, enabled
+    or not does not make a difference.
+
+    Usage: for name in daemon.iter() do ... end
+
+    @return an iterator over all known daemons.
+]]
+function iter()
+    local list = fs.list(daemonPath)
+    for name, _ in pairs(state.functions) do
+        table.insert(list, name)
+    end
+    table.sort(list)
+    local index
+    return function()
+        local name
+        index, name = next(list, index)
+        if name then
+            if canDisableScripts() then
+                return select(1, name:gsub("%." .. disabledPostfix .. "$", ""))
+            else
+                return name
+            end
+        end
+    end
+end
+
+--[[
+    Hooks up the daemon driver and starts all enabled daemon scripts.
+]]
+function install()
+    -- If we're already installed we have nothing to do.
+    if isInstalled() then
+        return false
+    end
+
+    -- Remember the original resume function and the coroutine that launched
+    -- the daemon scheduler (via a weak reference).
+    private.resume = coroutine.resume
+    private.parent = setmetatable({thread = coroutine.running()}, {__mode="v"})
+
+    -- Hook in our replacement for the resume function, which we will use to
+    -- drive our active daemons.
+    coroutine.resume = function(thread, event, ...)
+        -- Restore the original coroutine.resume while running this function so
+        -- that we don't get weird recursion from daemons running stuff in
+        -- coroutines.
+        local resume = coroutine.resume
+        coroutine.resume = private.resume
+
+        -- Check if our parent thread is still alive, because if it isn't we
+        -- should pack our things, too. If it still exists, we either have it
+        -- as the current one, in which case we can be sure it won't be garbage
+        -- collected while this function completes, or it isn't in which case
+        -- we'd at worst compare the current thread with nil instead of the
+        -- parent thread in the next conditional, so everything is well.
+        if not private.parent.thread then
+            uninstall()
+            return unpack(result)
+        end
+
+        -- If the thread we ran was not our parent, skip the rest.
+        if thread ~= private.parent.thread then
+            return coroutine.resume(thread, event, ...)
+        end
+
+        -- Do the normal resume, which runs the intended thread.
+        if state.filters[0] == nil or   -- no filter
+           state.filters[0] == event or -- matching filter
+           event == "terminate"         -- termination request
+        then
+            -- Got an event our parent is interested in, pass it along. The
+            -- normal protocol in CC is for coroutines to only return a success
+            -- state and an optional event filter, but just in case we'll pass
+            -- along whatever else they return, too.
+            local result = {coroutine.resume(thread, event, ...)}
+
+            -- Shut down instantly if our parent thread fails. We'd eventually
+            -- get there when the parent is garbage collected, but let's not
+            -- rely on something as unstable as that...
+            if coroutine.status(thread) == "dead" then
+                uninstall()
+                return unpack(result)
+            elseif private.resume == nil then
+                -- We were uninstalled while the parent thread ran.
+                return unpack(result)
+            else
+                -- Everyhing is looking fine so far, remember the filter for
+                -- our parent thread, because we actually accept everything
+                -- (otherwise the daemons might not get events they are waiting
+                -- for, because we'd only get called for the parent's events).
+                state.filters[0] = result[2]
+            end
+        end
+
+        -- Reinstate our wrapper since our parent is still alive and kicking.
+        coroutine.resume = resume
+
+        -- As opposed to the parallel API we do *not* pass along the terminate
+        -- event, because key-combos should only be relevant to the foreground
+        -- program.
+        if event ~= "terminate" then
+            -- Run our child processes now (i.e. all the running daemons). This
+            -- is pretty similar to what the parallel API does: iterate all
+            -- daemons, run them, store their filter and accumulate the list of
+            -- dead ones.
+            local stopped = {}
+            for name, thread in pairs(state.running) do
+                local running, success, result =
+                    private.run(name, thread, event, ...)
+                if not running then
+                    -- If the daemon has stopped, remove it from our list of
+                    -- running daemons. We do this in a post-processing step to
+                    -- not irritate next() (which iterates the table).
+                    table.insert(stopped, name)
+                else
+                    -- Thread yielded, update it's event filter.
+                    state.filters[name] = result
+                end
+                if not success then
+                    -- The daemon stopped because of an error. Log it.
+                    private.logPrintError(
+                        "Error executing daemon '" .. name .. "': " .. result)
+                end
+            end
+
+            -- Remove dead daemons from the list.
+            for _, name in ipairs(stopped) do
+                state.running[name] = nil
+                state.filters[name] = nil
+                os.queueEvent("daemon", "stopped", name)
+            end
+        end
+
+        -- Do not return any filter, because we cannot specify multiple filters
+        -- (which we would have to, since we have multiple yielding coroutines
+        -- here -- parent plus any running daemons).
+        return true
+    end
+
+    -- Build a list of daemons to start.
+    local list = {}
+    -- Get list of scripts in the daemons folder that are enabled.
+    for _, name in ipairs(fs.list(daemonPath)) do
+        -- Build the complete path and check if the script is enabled.
+        local path = fs.combine(daemonPath, name)
+        if private.shouldRun(path) then
+            table.insert(list, name)
+        end
+    end
+    -- Start all function daemons.
+    for name, _ in pairs(state.functions) do
+        table.insert(list, name)
+    end
+    -- Start the daemons, in alphabetical order, to allow ordering where
+    -- necessary (though it normally shouldn't be, you could just wait in the
+    -- depending daemon until the one it depends on is loaded).
+    table.sort(list)
+    for _, name in ipairs(list) do
+        local success, reason = start(name)
+        if not success then
+            private.logPrintError(
+                "Error starting daemon '" .. name .. "': " .. reason)
+        end
+    end
+
+    -- All done!
+    return true
+end
+
+--[[
+    Stops all running daemons and unhooks the daemon scheduler.
+]]
+function uninstall()
+    -- If we're not installed we have nothing to do.
+    if not isInstalled() then
+        return false
+    end
+
+    -- Stop all daemons, by force if we have to.
+    repeat
+        -- Always get the first entry, to avoid the next() function getting
+        -- confused because we're deleting entries.
+        local name, thread = next(state.running)
+        if name then
+            if not stop(name) then
+                kill(name)
+            end
+        end
+    until name == nil
+
+    -- Restore the original coroutine.resume() function and nil our reference
+    -- so that we know we're no longer installed.
+    coroutine.resume = private.resume
+    private.resume = nil
+    private.parent = nil
+    -- These should be empty at this point, except for there possibly being a
+    -- filter for the parent thread, but just to be sure we create new tables.
+    private.running = {}
+    private.filters = {}
+
+    -- All done!
+    return true
+end
+
+--[[
+    Returns whether the daemon driver is installed or not.
+
+    @return true if intall() has been called; false otherwise.
+]]
+function isInstalled()
+    return private.resume ~= nil
+end
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Internals                                                                 --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- Internal state used to keep track of running daemons.
+state = {
+    -- List of currently running daemons.
+    running = {},
+
+    -- The event filter provided by the running daemons when they last yielded.
+    -- For fun we use the key [0] to store the current filter of our parent.
+    filters = {},
+
+    -- A list of functions that have been registered as daemons.
+    functions = {}
+}
+
+-- Private namespace.
+private = {
+    -- Original I/O methods. Keep track of them so we can restore them in
+    -- logRestore() below.
+    write = _G.write,
+    print = _G.print,
+    printError = _G.printError,
+    read = _G.read
+}
+
+--[[
+    Utility function for finding an existing daemon script.
+
+    @param name the name of the script.
+    @return (true, enabled) on success; false otherwise.
+    @private
+]]
+function private.find(name)
+    local pathEnabled = fs.combine(daemonPath, name)
+    if fs.exists(pathEnabled) and not fs.isDir(pathEnabled) then
+        return true, true
+    end
+    if canDisableScripts() then
+        local pathDisabled = pathEnabled .. "." .. disabledPostfix
+        if fs.exists(pathDisabled) and not fs.isDir(pathDisabled) then
+            return true, false
+        end
+    end
+    return false
+end
+
+--[[
+    Utility function for checking whether a daemon script should be run.
+
+    @param the path to the script.
+    @return true if the script is a file and not disabled; false otherwise.
+    @private
+]]
+function private.shouldRun(path)
+    if fs.isDir(path) then
+        return false
+    end
+    if canDisableScripts() then
+        return path:sub(-(disabledPostfix:len() + 1)) ~= "." .. disabledPostfix
+    end
+    return true
+end
+
+--[[
+    Utility function for running a daemon for the specified event.
+
+    @param name the name of the daemon to run.
+    @param event the type of event to runt the daemon for.
+    @param ... any additional arguments, usually empty.
+    @return (alive, success, result) where alive indicates whether the thread
+        is still running or died, success being whether the daemon terminated
+        normally or with an error, and result being the event filter on success
+        and error message on failure; success will be true and result will be
+        the current filter if the daemon wasn't run (due to it having provided
+        a filter that does not match this event).
+    @private
+]]
+function private.run(name, thread, event, ...)
+    -- Make sure our daemons use the original coroutine.resume if they use it.
+    local resume = coroutine.resume
+    coroutine.resume = private.resume
+
+    -- We redirect all output the daemons produce to a log file.
+    private.logInstall()
+
+    -- Run the daemon if the event matches the filter.
+    local filter = state.filters[name]
+    local success, result = true, filter
+    if filter == nil or     -- no filter
+       filter == event or   -- matching filter
+       event == "terminate" -- termination request
+    then
+        success, result = coroutine.resume(thread, event, ...)
+    end
+
+    -- Restore normal output functionality and resume wrapper.
+    private.logRestore()
+    coroutine.resume = resume
+    return coroutine.status(thread) ~= "dead", success, result
+end
+
+--[[
+    Like write() but writes to the logfile.
+
+    @private
+]]
+function private.logWrite(...)
+    local file = fs.open(logFile, "a")
+    for _, s in ipairs({...}) do
+        file.write(s)
+    end
+    file.close()
+end
+
+--[[
+    Like print() but writes to the logfile.
+
+    @private
+]]
+function private.logPrint(...)
+    local file = fs.open(logFile, "a")
+    for _, s in ipairs({...}) do
+        file.write(s)
+    end
+    file.write("\n")
+    file.close()
+end
+
+--[[
+    Like printError() but writes to the logfile and prepends the message with
+    the string "[ERROR] ".
+
+    @private
+]]
+function private.logPrintError(...)
+    local file = fs.open(logFile, "a")
+    file.write("[ERROR] ")
+    for _, s in ipairs({...}) do
+        file.write(s)
+    end
+    file.write("\n")
+    file.close()
+end
+
+--[[
+    Read input from the terminal, or rather, it doesn't.
+
+    @private
+]]
+function private.logRead(...)
+    error("Cannot read input from terminal in this context.")
+end
+
+--[[
+    Rewrites the global functions that interact with the screen to write to the
+    log file instead (used so that daemons do not mess up the screen).
+
+    @private
+]]
+function private.logInstall()
+    _G.write = private.logWrite
+    _G.print = private.logPrint
+    _G.printError = private.logPrintError
+    _G.read = private.logRead
+end
+
+--[[
+    Restores the global functions that interact with the screen to their
+    original state (after a daemon has completed running).
+
+    @private
+]]
+function private.logRestore()
+    _G.write = private.write
+    _G.print = private.print
+    _G.printError = private.printError
+    _G.read = private.read
+end
+
+-------------------------------------------------------------------------------
+-- Environment checking                                                      --
+-------------------------------------------------------------------------------
+
+-- Ensure we have a path set for our daemon files.
+assert(type(daemonPath) == "string" and daemonPath ~= "",
+    "The setting 'daemonPath' must be a non-empty string.")
+
+-- Ensure the folder with daemon files exists.
+assert(not fs.exists(daemonPath) or fs.isDir(daemonPath),
+    "Folder for daemon scripts cannot be created because a file " ..
+    "with that name already exists ('" .. daemonPath .. "').")
+
+-- Ensure we have a path set for our daemon files.
+assert(type(logFile) == "string" and logFile ~= "",
+    "The setting 'logFile' must be a non-empty string.")
+
+-- Ensure the log file is not a folder.
+assert(not fs.exists(logFile) or not fs.isDir(logFile),
+    "Log file cannot be created because a folder with that name " ..
+    "already exists ('" .. logFile .. "').")
+
+-------------------------------------------------------------------------------
+-- Initialization                                                            --
+-------------------------------------------------------------------------------
+
+-- Create folder if it doesn't exist.
+fs.makeDir(daemonPath)
+
+-- Clear the log file.
+if clearLog then
+    fs.open(logFile, "w").close()
+end

@@ -63,7 +63,7 @@ commands = {
             if success then
                 print("Successfully started/ran daemon '" .. name .. "'.")
             else
-                print("Failed starting daemon '" .. name "': " .. reason)
+                print("Failed starting daemon '" .. name .. "': " .. reason)
             end
         end
     },

@@ -149,6 +149,7 @@ end
     @param name the name of the state to add. Other states can switch to it by
         calling switchTo() with this value as the parameter.
     @param callback the function to exectue when the state becomes active.
+    @return the state machine, to allow chaining.
 ]]
 function class:add(name, callback)
     local metatable = private.validate(self)
@@ -158,6 +159,7 @@ function class:add(name, callback)
     if metatable.entry == nil then
         metatable.entry = name
     end
+    return self
 end
 
 --[[

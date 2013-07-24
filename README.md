@@ -25,7 +25,7 @@ This API provides a single function, `stacktrace.tpcall`, which is functionally 
 [State API](apis/state)
 ===========
 
-This API provides a constructor function, `state.new`, which allows creating a state machine. This state machine can be populated with states by calling its `add` function, and run using its `run` function. It provides an internal environment to all state functions and save this environment as well as the name of the currently executing state, to allow resuming execution. It is intended to make writing resumable programs a little easier.
+This API provides a constructor function, `state.new`, which allows creating a state machine. This state machine can be populated with states by calling its `add` function, and run using its `run` function. It provides an internal environment to all state functions and saves this environment as well as the name of the currently executing state, to allow resuming execution. It is intended to make writing resumable programs a little easier.
 
 Example use:
 ```lua

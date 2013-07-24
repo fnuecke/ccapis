@@ -296,7 +296,21 @@ function start(name)
     -- other scripts when declaring non-local variables.
     setfenv(script, setmetatable({}, {__index = _G}))
     -- Create a coroutine for the script.
-    local thread = coroutine.create(script)
+    local thread = coroutine.create(
+        function()
+            -- Wrap the actual script in a manual pcall, so that we do our
+            -- error handling via pcall instead of directly in coroutine.resume
+            -- so that we get a stacktrace if pcall was replaced with the
+            -- stacktrace API's tpcall function. We can get away with this
+            -- because even if daemons were to return values on success, they'd
+            -- be discarded anyway, so we're not losing anything.
+            local success, reason = pcall(script)
+            if not success then
+                -- Avoid prefixing our current location but keep the original
+                -- error message as is when rethrowing.
+                error(reason, 0)
+            end
+        end)
     -- Run it until it yields the first time.
     local running, success, result = private.run(name, thread)
     if not success then

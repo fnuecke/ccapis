@@ -146,7 +146,9 @@ end
     presumed to be the entry state (i.e. it will be the first to execute when
     the state machine is run).
 
-    @param name the 
+    @param name the name of the state to add. Other states can switch to it by
+        calling switchTo() with this value as the parameter.
+    @param callback the function to exectue when the state becomes active.
 ]]
 function class:add(name, callback)
     local metatable = private.validate(self)

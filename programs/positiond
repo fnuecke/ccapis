@@ -23,13 +23,14 @@ assert(lama, "requires LAMA")
 -- Config                                                                    --
 -------------------------------------------------------------------------------
 
--- File in which to store current program state.
+-- Channel on which to send our position.
 local channel = 14341
 
 -------------------------------------------------------------------------------
 -- Program logic                                                             --
 -------------------------------------------------------------------------------
 
+-- Find an attached modem by checking all sides.
 local modem
 for _, side in pairs(redstone.getSides()) do
     if peripheral.isPresent(side) and peripheral.getType(side) == "modem" then

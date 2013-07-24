@@ -67,6 +67,14 @@ commands = {
             end
         end
     },
+    restart = {
+        help = "Restarts a daemon.",
+        args = {{"name", "The name of the daemon."}},
+        call = function(name)
+            commands.stop.call(name)
+            commands.start.call(name)
+        end
+    },
     stop = {
         help = "Tries to stop a daemon if it is running.",
         args = {{"name", "The name of the daemon."}},
@@ -74,7 +82,7 @@ commands = {
             if daemon.stop(name) then
                 print("Successfully stopped daemon '" .. name .. "'.")
             else
-                print("Failed stopping daemon, 'terminate' event was ignored.")
+                print("Failed stopping daemon, not running or 'terminate' event was ignored.")
             end
         end
     },

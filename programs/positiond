@@ -1,0 +1,64 @@
+--[[
+    PD - Position Daemon - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This script is intended to be run as a daemon. It will periodically send
+    the turtle's position - as stored in LAMA - via a wireless modem. This is
+    intended to make it easier to keep track of turtles. The message will be a
+    serialized table of the following format:
+    { x = number,      -- New X coordinate.
+      y = number,      -- New Y coordinate.
+      z = number,      -- New Z coordinate.
+      facing = number, -- New facing.
+      id = number,     -- The id of the turtle.
+      label = string } -- The label of the turtle.
+]]
+
+os.loadAPI("lama")
+assert(lama, "requires LAMA")
+
+-------------------------------------------------------------------------------
+-- Config                                                                    --
+-------------------------------------------------------------------------------
+
+-- File in which to store current program state.
+local channel = 14341
+
+-------------------------------------------------------------------------------
+-- Program logic                                                             --
+-------------------------------------------------------------------------------
+
+local modem
+for _, side in pairs(redstone.getSides()) do
+    if peripheral.isPresent(side) and peripheral.getType(side) == "modem" then
+        modem = peripheral.wrap(side)
+        break
+    end
+end
+assert(modem, "no modem found")
+
+-- Remember the last position we sent, to avoid sending when nothing changed.
+local px, py, pz, pf
+while true do
+    local x, y, z, f = lama.get()
+    if x ~= px or y ~= py or z ~= pz or f ~= pf then
+        -- Send the new position. Manually serialize it to get a more compact
+        -- presentation than when using textutils.serialize(). It can still be
+        -- read back using textutils.unserialize().
+        local label = os.getComputerLabel()
+        if label then
+            label = string.format("%q", os.getComputerLabel())
+        end
+        modem.transmit(channel, 0,
+            "{x=" .. tostring(x) ..
+            ",y=" .. tostring(y) ..
+            ",z=" .. tostring(z) ..
+            ",facing=" .. tostring(f) ..
+            ",id=" .. tostring(os.getComputerID()) ..
+            (label and (",label=" .. label) or "") .. "}")
+        px, py, pz, pf = x, y, z, f
+    end
+    os.sleep(1)
+end

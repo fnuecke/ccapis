@@ -23,7 +23,7 @@ local pcall, xpcall = pcall, xpcall
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.0a"
 
 --[[
     Custom protected function caller that produces a traceback on errors.
@@ -88,8 +88,12 @@ function tpcall(f, ...)
                 local _, location = pcall(error, "", level)
                 -- Get the message parts and format them.
                 local file, line = location:match("^([^:]+):(%d*).*$")
-                line = line ~= "" and line or "native"
-                message = message .. "\n at " .. file .. ":" .. line
+                if file then
+                    line = line ~= "" and line or "native"
+                    message = message .. "\n at " .. file .. ":" .. line
+                else
+                    message = message .. "\n at " .. location
+                end
             end
             return message
         end)

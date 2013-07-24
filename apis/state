@@ -1,0 +1,205 @@
+--[[
+    SM - State Machine - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This API allows it to easily set up state machines, which is frequently
+    needed when writing resumable programs.
+
+    Example use:
+    os.loadAPI("apis/state")
+    local program = state.new("/.program-state")
+    -- Mind the colon!
+    program:add("start", function()
+        print("Running program...")
+        stateGlobal = "This variable is available in all states."
+        -- State variables will also be saved with the state.
+        if wasRestarted == nil then
+            wasRestarted = false
+        else
+            wasRestarted = true
+        end
+        save()
+        -- If the program were to be terminated while waiting for this sleep
+        -- call to return, wasRestarted would already hold a value (false), and
+        -- be consequently set to true when the program is resumed.
+        os.sleep(5)
+        switchTo("end")
+    end)
+    program:add("end", function()
+        print("Shutting down...")
+        if wasRestarted then
+            print("This program was interrupted at least once!")
+        else
+            print("This program finished in one go.")
+        end
+        -- Setting the next state to nil will make the state machine's run
+        -- function return.
+        switchTo(nil)
+    end)
+    program:run()
+
+    This example demonstrates a couple of features:
+    - the API will wrap any callbacks with a custom environment that is shared
+      among all state functions, and that is saved when the state is saved
+      (switching to another state via switchTo() or calling save() manually).
+    - the API provides two "internal" functions to the state functions:
+      - save() which saves the program state, i.e. the currently executing
+        state function and the functions' internal environment.
+      - switchTo() which allows the functions to switch to another state
+        function. Passing nil to this function will end the state program.
+]]
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- State API                                                                 --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- If this API was loaded before, reuse it to avoid losing our internal state.
+if state then
+    local env = getfenv()
+    for k, v in pairs(state) do
+        env[k] = v
+    end
+    return
+end
+
+-- Namespace forward declarations.
+local class, private = {}
+
+-------------------------------------------------------------------------------
+-- Public API                                                                --
+-------------------------------------------------------------------------------
+
+-- The current version of the API.
+version = "1.0"
+
+--[[
+    Creates a new state machine which will save its state to file a the
+    specified location.
+
+    IMPORTANT: you have to ensure yourself that no two state machines with the
+    same save file are active at the same time; if they are, they will
+    overwrite each other's state files.
+
+    @param savePath the path to the file to save the state machine's state to.
+    @return the newly created state machine.
+]]
+function new(savePath)
+    assert(type(savePath) == "string" and savePath ~= "",
+        "'savePath' must be a non-empty string")
+    assert(not fs.isDir(savePath),
+        "'savePath' must not point to a folder")
+
+    -- Create a new instance.
+    local state = {}
+    local metatable = {list = {}}
+    setmetatable(state, metatable)
+    -- We do this after assigning the metatable, because otherwise the __index
+    -- will be replaced by a function wrapping the table, supposedly for
+    -- persistence if it ever makes it into CC: http://goo.gl/mS3ycx
+    -- Since we don't use any C functions this should be OK, though.
+    metatable.__index = class
+
+    -- Load an existing state, if any.
+    if not fs.exists(savePath) then
+        metatable.environment = {}
+    else
+        local file = fs.open(savePath, "r")
+        metatable.current = textutils.unserialize(file.readLine())
+        metatable.environment = textutils.unserialize(file.readAll())
+        file.close()
+    end
+    -- Allos us to delete the state file after the program finishes.
+    metatable.deleteState = function()
+        fs.delete(savePath)
+    end
+
+    -- Some private functions that can only be called from a state callback.
+    local function save()
+        local file = fs.open(savePath, "w")
+        file.writeLine(textutils.serialize(metatable.current))
+        file.write(textutils.serialize(metatable.environment))
+        file.close()
+    end
+    local function switchTo(name)
+        assert(name == nil or metatable.list[name], "no such state")
+        metatable.current = name
+        save()
+    end
+    local locals = {}
+    setmetatable(metatable.environment, locals)
+    -- Same trick as above, to keep it a table.
+    locals.__index = {save = save, switchTo = switchTo}
+
+    -- Done, return our state.
+    return state
+end
+
+--[[
+    Registers a new state with the specified name and callback function.
+
+    @param name the 
+]]
+function class:add(name, callback)
+    local metatable = private.validate(self)
+    assert(metatable.list[name] == nil,
+        "state with name '" .. name .. "' already exists")
+    metatable.list[name] = callback
+    if metatable.entry == nil then
+        metatable.entry = name
+    end
+end
+
+--[[
+    Run this state machine.
+
+    This will return, when an internal states switch to a nil state.
+]]
+function class:run()
+    local metatable = private.validate(self)
+    metatable.current = metatable.entry
+    while metatable.current do
+        local callback = metatable.list[metatable.current]
+        -- In the following we adjust the functions environment by wrapping it
+        -- in our internal one. This will make it so that when a function tries
+        -- to access a non-existing global it will write to our environment
+        -- table, which is saved.
+        -- Keep track of the original environment to allow reverting to it.
+        local oldfenv = getfenv(callback)
+        -- Adjust the environment's metatable so that the callback can still
+        -- access existing variables form its original environment.
+        setmetatable(getmetatable(metatable.environment).__index,
+            {__index = oldfenv})
+        -- Adjust the envionment and run the function.
+        setfenv(callback, metatable.environment)()
+        -- Restore the old environment (to avoid infinitely nesting of
+        -- envionments via metatables).
+        setfenv(callback, oldfenv)
+    end
+    metatable.deleteState()
+end
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Internals                                                                 --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- Private namespace.
+private = {}
+
+--[[
+    Checks whether the specified value is a state machine.
+
+    @return the metatable of the value.
+    @private
+]]
+function private.validate(state)
+    local metatable = getmetatable(state)
+    assert(metatable and getmetatable(state).__index == class,
+        "'state' must be a state machine instance")
+    return metatable
+end

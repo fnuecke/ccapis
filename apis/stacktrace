@@ -62,14 +62,20 @@ function tpcall(f, ...)
             return f(unpack(args))
         end,
         function(message)
+            -- Skip if we were terminated.
+            if message == "Terminated" then
+                return message
+            end
             -- Format the message itself.
             do
                 local file, line, what =
                     message:match("^([^:]+):(%d*):?%s*(.*)$")
-                message = what ~= "" and ("error: " .. what) or "error"
-                message = message .. "\n at " .. file
-                if line ~= "" then
-                    message = message .. ":" .. line
+                if file then
+                    message = what ~= "" and ("error: " .. what) or "error"
+                    message = message .. "\n at " .. file
+                    if line ~= "" then
+                        message = message .. ":" .. line
+                    end
                 end
             end
             -- Generate a stack trace, starting one above the original error

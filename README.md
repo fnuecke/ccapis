@@ -33,7 +33,8 @@ Example use:
 os.loadAPI("apis/state")
 local program = state.new("/.program-state")
 
--- Add some states. Mind the colon!
+-- Add some states. Mind the colon! The first state added to the state
+-- machine is assumed to be the entry state.
 program:add("start", function()
     print("Running program...")
     stateGlobal = "This variable is available in all states."

@@ -10,7 +10,8 @@
     Example use:
     os.loadAPI("apis/state")
     local program = state.new("/.program-state")
-    -- Mind the colon!
+    -- Add some states. Mind the colon! The first state added to the state
+    -- machine is assumed to be the entry state.
     program:add("start", function()
         print("Running program...")
         stateGlobal = "This variable is available in all states."
@@ -140,6 +141,10 @@ end
 
 --[[
     Registers a new state with the specified name and callback function.
+
+    If the state is the first to be added to the state machine, it will be
+    presumed to be the entry state (i.e. it will be the first to execute when
+    the state machine is run).
 
     @param name the 
 ]]

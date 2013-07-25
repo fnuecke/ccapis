@@ -22,6 +22,11 @@ You can interact with this API from the shell by using the [daemon-conf](program
 
 This API provides a single function, `stacktrace.tpcall`, which is functionally the same as `pcall`, except that it will provide a full stacktrace instead of just the exact error location. I find it useful to hook it in as a replacement for `pcall` in my startup script.
 
+[Persistent Redstone API](apis/predstone)
+=========================
+
+The API everyone and their dog wrote at least once. This API offers replacements for the output setting functions in the redstone API (including analog, if supported), and will write the current output state to a file on disk, which is read when the API is loaded again after a reboot, to restore the last known output states. I recommend using this together with the startup API (or something similar) and add a high priority startup script that initializes this API and makes it replace the functions in the redstone API by calling `predstone.hijackRedstoneAPI()`.
+
 [State API](apis/state)
 ===========
 

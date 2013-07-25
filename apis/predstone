@@ -1,0 +1,237 @@
+--[[
+    PR - Persistent Redstone - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This API provides replacements for the output setting methods and will
+    store the last set outputs so it can restore them after a reboot (and the
+    API is loaded again).
+
+    It is recommended to load the API in some startup script, so that it can
+    automatically restore the redstone output after a reboot (e.g. when using
+    my startup API into the /autorun folder, with a high priority).
+]]
+
+-------------------------------------------------------------------------------
+-- Config                                                                    --
+-------------------------------------------------------------------------------
+
+-- File in which to store current redstone state.
+local stateFile = ".predstone-state"
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Persistent Redstone API                                                   --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- If this API was loaded before, reuse it to avoid losing our internal state.
+if predstone then
+    local env = getfenv()
+    for k, v in pairs(predstone) do
+        env[k] = v
+    end
+    return
+end
+
+-- Internal forward declarations. They have to be declared here so that
+-- functions can access them.
+local state, private
+
+-------------------------------------------------------------------------------
+-- Public API                                                                --
+-------------------------------------------------------------------------------
+
+-- The current version of the API.
+version = "1.0"
+
+--[[
+    Sets the redstone output on the specified side.
+
+    This is equivalent to calling setBundledOutput(side, value ? 15 : 0).
+
+    @param side the side to set the output on.
+    @param value whether to set the output to on (true) or off (false).
+]]
+function setOutput(side, value)
+    private.setOutput(side, value)
+    -- Store value if it's not the default. If it is, clear the entry to avoid
+    -- saving unnecessary data (since we don't need to set it when loading).
+    state.analogOutput[side] = value and 15 or nil
+    private.save()
+end
+
+--[[
+    Sets the analog redstone output on the specified side.
+
+    @param side the side to set the output on.
+    @param strength the strength of the analog output, in the interval [0, 15].
+]]
+function setAnalogOutput(side, strength)
+    private.setAnalogOutput(side, strength)
+    -- Store value if it's not the default. If it is, clear the entry to avoid
+    -- saving unnecessary data (since we don't need to set it when loading).
+    state.analogOutput[side] = strength > 0 and strength or nil
+    private.save()
+end
+
+--[[
+    Sets the bundled redstone output on the specified side.
+
+    For all colors specified the output will be on, for all other colors it
+    will be off. To add or remove colors from the output, read it first and
+    adjust it using the colors API, then call this function with the new value.
+
+    @param side the side to set the output on.
+    @param colors the colors for which to enable the output.
+]]
+function setBundledOutput(side, colors)
+    private.setBundledOutput(side, colors)
+    -- Wrap the value to a valid range. Note that this is what ComputerCraft
+    -- does internally, too, as far as I can tell (tested with Minefactory
+    -- Reloaded's RedNet cables).
+    colors = colors % 65536
+    -- Store value if it's not the default. If it is, clear the entry to avoid
+    -- saving unnecessary data (since we don't need to set it when loading).
+    state.bundledOutput[side] = colors ~= 0 and colors or nil
+    private.save()
+end
+
+--[[
+    Replaces the output setting functions in the redstone API.
+
+    This makes it easier to integrate this API into existing programs.
+
+    @param restore whether to restore the original redstone API functions.
+]]
+function hijackRedstoneAPI(restore)
+    -- Note: it is sufficient to adjust the 'rs' table, because it is in fact
+    -- not just a mirror but the exact same instance as the table available via
+    -- 'redstone'.
+    if restore then
+        if not rs._predstone then return end
+        rs.setOutput        = rs._prs.setOutput
+        rs.setAnalogOutput  = rs._prs.setAnalogOutput
+        rs.setBundledOutput = rs._prs.setBundledOutput
+        rs._predstone       = nil
+    else
+        if rs._predstone then return end
+        rs._predstone = {
+            setOutput        = rs.setOutput,
+            setAnalogOutput  = rs.setAnalogOutput,
+            setBundledOutput = rs.setBundledOutput
+        }
+        -- Only add the analog one if it was there originally, i.e. if the
+        -- version of ComputerCraft is high enough, to avoid tests for its
+        -- existence returning true, only for it to throw an error when called.
+        rs.setOutput        = setOutput
+        rs.setAnalogOutput  = rs.setAnalogOutput and setAnalogOutput
+        rs.setBundledOutput = setBundledOutput
+    end
+end
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Internals                                                                 --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- Private namespace.
+private = {}
+
+-- Keep track of the original redstone API.
+private.setOutput        = rs.setOutput
+private.setAnalogOutput  = rs.setAnalogOutput
+private.setBundledOutput = rs.setBundledOutput
+
+-- Initialize state variable with tables for output types.
+state = {
+    analogOutput = {},
+    bundledOutput = {}
+}
+
+-------------------------------------------------------------------------------
+-- State saving/loading                                                      --
+-------------------------------------------------------------------------------
+
+--[[
+    Saves the state to disk.
+
+    @private
+]]
+function private.save()
+    -- Serialize before opening the file, just in case.
+    local data = textutils.serialize(state)
+    local file = fs.open(stateFile, "w")
+    file.write(data)
+    file.close()
+end
+
+--[[
+    Restores the state and sets outputs to what they were.
+
+    @private
+]]
+function private.load()
+    if not fs.exists(stateFile) then
+        return
+    end
+    assert(not fs.isDir(stateFile),
+        "Invalid state filename '" .. stateFile .. "': it's a folder.")
+
+    -- Load data from file.
+    local file = fs.open(stateFile, "r")
+    local data = file.readAll()
+    file.close()
+
+    -- Parse saved data.
+    data = textutils.unserialize(data)
+
+    -- Restore outputs. Do this using the native functions to avoid saving
+    -- unnecessarily. If we have analog output, it's enough to restore that.
+    if data.analogOutput then
+        for _, side in ipairs(rs.getSides()) do
+            -- Ignore empty and invalid data.
+            local value = data.analogOutput[side]
+            if type(value) == "number" and value >= 1 and value <= 15 then
+                if private.setAnalogOutput then
+                    private.setAnalogOutput(side, value)
+                else
+                    -- Fall back to boolean output if we run an older version
+                    -- of ComputerCraft that didn't support analog output.
+                    private.setOutput(side, value > 0)
+                end
+                state.analogOutput[side] = value
+            end
+        end
+    end
+    if data.bundledOutput then
+        for _, side in ipairs(rs.getSides()) do
+            -- Ignore empty and invalid data.
+            local value = data.bundledOutput[side]
+            if type(value) == "number" then
+                value = value % 65536
+                if value ~= 0 then
+                    private.setBundledOutput(side, value)
+                    state.bundledOutput[side] = value
+                end
+            end
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Initialization                                                            --
+-------------------------------------------------------------------------------
+
+-- Disable analog output function if redstone API doesn't support it.
+if not private.setAnalogOutput then
+    setAnalogOutput = nil
+end
+
+-- Restore a previous state.
+private.load()
+
+-- Save the current state in case we're loaded after outputs have been set.
+private.save()

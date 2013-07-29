@@ -1,0 +1,139 @@
+--[[
+    CAPI - Camera API - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This script allows interacting with the camera API via the shell.
+]]
+
+os.loadAPI("apis/camera")
+
+-------------------------------------------------------------------------------
+-- Commands                                                                  --
+-------------------------------------------------------------------------------
+
+-- List of all commands of this program. Keep the variable declaration
+-- separate, so that it can be referenced in the help callback.
+local commands
+commands = {
+    help = {
+        help = "Shows the help text for the specified command.",
+        args = {{"command", "The command to get help on."}},
+        call = function(name)
+            local command = commands[name]
+            if command == nil then
+                print("No such command.")
+            else
+                print(command.help)
+                if command.args and #command.args > 0 then
+                    print("Parameters:")
+                    for _, arg in ipairs(command.args) do
+                        print(" " .. arg[1] .. " - " .. arg[2])
+                    end
+                end
+            end
+        end
+    },
+    calibrate = {
+        help = "Performs a calibration run for a block.",
+        args = {
+            {"name", "The block's alias."},
+            {"samples", "The number of samples to take."}
+        },
+        call = function(name, samples)
+            assert(type(name) ~= "", "'name' must not be empty")
+            samples = samples and tonumber(samples) or 1
+            assert(samples, "'samples' must be a number or omitted")
+
+            -- Try to find the camera.
+            local cam, side = camera.wrap()
+            assert(cam, "no camera found")
+            print("Found a camera on side '" .. side .. "'.")
+
+            -- Remember old signature to show a comparison.
+            local oldSignature = camera.signature.get(name)
+            local newSignature = cam:calibrate(name, samples, true)
+
+            -- Display old versus new signature representations, side by side.
+            print("Old signature:           New signature:")
+            oldSignature:render()
+            local x, y = term.getCursorPos()
+            term.setCursorPos(x, y - 6)
+            newSignature:render(26)
+        end
+    },
+    test = {
+        help = "Try to determine the alias of a block.",
+        args = {{"samples", "The number of samples to take."}},
+        call = function(samples)
+            samples = samples and tonumber(samples) or 1
+            assert(samples, "'samples' must be a number or omitted")
+
+            -- Try to find the camera.
+            local cam, side = camera.wrap()
+            assert(cam, "no camera found")
+            print("Found a camera on side '" .. side .. "'.")
+
+            -- Take as many samples as specified and build the average.
+            local snapshot = camera.signature.zero()
+            for i = 1, samples do
+                snapshot = snapshot + cam:trigger()
+            end
+            snapshot = snapshot / samples
+
+            -- See if we know a block that has a similar signature.
+            local name, mse = camera.signature.find(snapshot)
+            if not name then
+                print("Could not determine the type of this block.")
+            else
+                print("This is probably '" .. name .. "' (MSE: " .. mse .. ").")
+                print("Tested for signature:    Matching signature:")
+                snapshot:render()
+                local x, y = term.getCursorPos()
+                term.setCursorPos(x, y - 6)
+                camera.signature.get(name):render(26)
+            end
+        end
+    }
+}
+
+-------------------------------------------------------------------------------
+-- Command logic                                                             --
+-------------------------------------------------------------------------------
+
+--[[
+    Automatically generates a usage description, based on the command list.
+]]
+local function usage()
+    local programName = fs.getName(shell.getRunningProgram())
+    print("Usage: " .. programName .. " <command> <args...>")
+    local names = {}
+    for name, _ in pairs(commands) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    print("Commands: " .. table.concat(names, ", "))
+    print("Use '" .. programName ..
+          " help <command>' to get more information on a specific command.")
+end
+
+--[[
+    Handles command line arguments and executes the corresponding command.
+]]
+local function run(...)
+    local args = {...}
+    local command = commands[args[1]]
+    if #args == 0 or command == nil then
+        usage()
+    else
+        table.remove(args, 1)
+        command.call(unpack(args))
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Initialization                                                            --
+-------------------------------------------------------------------------------
+
+run(...)

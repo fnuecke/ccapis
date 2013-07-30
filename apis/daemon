@@ -449,12 +449,6 @@ function install()
     -- Hook in our replacement for the resume function, which we will use to
     -- drive our active daemons.
     coroutine.resume = function(thread, event, ...)
-        -- Restore the original coroutine.resume while running this function so
-        -- that we don't get weird recursion from daemons running stuff in
-        -- coroutines.
-        local resume = coroutine.resume
-        coroutine.resume = private.resume
-
         -- Check if our parent thread is still alive, because if it isn't we
         -- should pack our things, too. If it still exists, we either have it
         -- as the current one, in which case we can be sure it won't be garbage
@@ -463,15 +457,14 @@ function install()
         -- parent thread in the next conditional, so everything is well.
         if not private.parent.thread then
             uninstall()
-            return unpack(result)
         end
 
         -- If the thread we ran was not our parent, skip the rest.
         if thread ~= private.parent.thread then
-            return coroutine.resume(thread, event, ...)
+            return private.resume(thread, event, ...)
         end
 
-        -- Do the normal resume, which runs the intended thread.
+        -- Do the normal resume, which runs the parent thread.
         if state.filters[0] == nil or   -- no filter
            state.filters[0] == event or -- matching filter
            event == "terminate"         -- termination request
@@ -480,7 +473,7 @@ function install()
             -- normal protocol in CC is for coroutines to only return a success
             -- state and an optional event filter, but just in case we'll pass
             -- along whatever else they return, too.
-            local result = {coroutine.resume(thread, event, ...)}
+            local result = {private.resume(thread, event, ...)}
 
             -- Shut down instantly if our parent thread fails. We'd eventually
             -- get there when the parent is garbage collected, but let's not
@@ -499,9 +492,6 @@ function install()
                 state.filters[0] = result[2]
             end
         end
-
-        -- Reinstate our wrapper since our parent is still alive and kicking.
-        coroutine.resume = resume
 
         -- As opposed to the parallel API we do *not* pass along the terminate
         -- event, because key-combos should only be relevant to the foreground
@@ -701,10 +691,6 @@ end
     @private
 ]]
 function private.run(name, thread, event, ...)
-    -- Make sure our daemons use the original coroutine.resume if they use it.
-    local resume = coroutine.resume
-    coroutine.resume = private.resume
-
     -- We redirect all output the daemons produce to a log file.
     private.logInstall()
 
@@ -718,9 +704,8 @@ function private.run(name, thread, event, ...)
         success, result = coroutine.resume(thread, event, ...)
     end
 
-    -- Restore normal output functionality and resume wrapper.
+    -- Restore normal output functionality.
     private.logRestore()
-    coroutine.resume = resume
     return coroutine.status(thread) ~= "dead", success, result
 end
 

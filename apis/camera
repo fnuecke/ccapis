@@ -1,0 +1,457 @@
+--[[
+    CAPI - Camera API - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This API is intended to make it easier to work with the camera peripheral.
+]]
+
+-------------------------------------------------------------------------------
+-- Config                                                                    --
+-------------------------------------------------------------------------------
+
+-- The cooldown time of the camera peripheral.
+local cooldown = 1
+
+-- The file in which to save calibrated block signatures.
+local signaturesFile = "/.camera-signatures"
+
+-- The maximum mean square error to allow for a signature to consider it a
+-- match. This value depends on the maximum noise level and should be adjusted
+-- as necessary. Keep in mind that in darker environments the MSE of all
+-- signatures will become similar, because the input will be purely random.
+-- Choose lower values for more restrictive results (but in turn failing to
+-- detect types more often than not, thus requiring multiple scans), or higher
+-- values to accept more false positives (but in turn be pretty sure that you
+-- also get all true matches).
+local searchThreshold = 0.4
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Camera API                                                                --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- If this API was loaded before, reuse it to avoid losing our internal state.
+if camera then
+    local env = getfenv()
+    for k, v in pairs(camera) do
+        env[k] = v
+    end
+    return
+end
+
+-- Internal forward declarations. They have to be declared here so that
+-- functions can access them.
+local state, private
+
+-- The length of a signature vector. This is a constant.
+local signatureLength = 64
+
+-------------------------------------------------------------------------------
+-- Public API                                                                --
+-------------------------------------------------------------------------------
+
+-- The current version of the API.
+version = "1.0"
+
+--[[
+    Wraps the camera peripheral on the specified side.
+
+    If no side is specified, will wrap the first attached camera it finds. Note
+    that this adds a metatable that replaces the original trigger function, so
+    that it returns a signature instead and enforces the cooldown, and so that
+    calibrate can be called on the camera as a member function.
+
+    @param side the side to wrap.
+    @return (camera, side) being the wrapped camera and the side on which it
+        was on success; false otherwise.
+]]
+function wrap(side)
+    local camera
+    if not side then
+        camera, side = private.findCamera()
+    elseif peripheral.isPresent(side) and
+           peripheral.getType(side) == "camera"
+    then
+        camera = peripheral.wrap(side)
+    end
+    if camera then
+        return setmetatable({}, {
+            camera = camera,
+            lastTrigger = 0,
+            __index = private.cameraMetatable}), side
+    end
+    return nil
+end
+
+--[[
+    Does a calibration run with the specified camera.
+
+    @param camera the camera to use for the calibration.
+    @param name the block alias to calibrate.
+    @param samples the number of samples to take. The more the more accurate
+        the calibration but the longer it will take.
+    @param writeProgress whether to write current calibration progress to the
+        terminal. Highly recommended for long calibration runs.
+]]
+function calibrate(camera, name, samples, writeProgress)
+    assert(camera.trigger, "'camera' is not a valid camera")
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
+    assert(writeProgress == nil or type(writeProgress) == "boolean",
+        "'writeProgress' must be a boolean or omitted")
+
+    -- Accumulate scan results.
+    local scanned = signature.zero()
+    if writeProgress then
+        local x, y = term.getCursorPos()
+        for sample = 1, samples do
+            term.clearLine()
+            term.setCursorPos(x, y)
+            write("Scanning... ")
+            write(sample .. "/" .. samples ..
+                " (" .. private.remainder(samples - sample) .. ")")
+            scanned = scanned + camera:trigger()
+        end
+        term.clearLine()
+        term.setCursorPos(1, y)
+        print("Done!")
+    else
+        for sample = 1, samples do
+            scanned = scanned + camera:trigger()
+        end
+    end
+
+    -- Merge with existing signature and store it.
+    local current, count = signature.get(name)
+    current = current * count + scanned
+    count = count + samples
+    current = current / count
+    return signature.set(name, current, count)
+end
+
+-------------------------------------------------------------------------------
+-- Signature API                                                             --
+-------------------------------------------------------------------------------
+
+--[[
+    Note: signatures provide overloads for the basic mathematical operations
+    (+, -, *, /) and two member functions, mse (computes the mean square error
+    between two signatures) and render (prints a graphical representation of
+    the signature to the terminal, in color if possible).
+]]
+
+-- Signature manipulation namespace.
+signature = {}
+
+--[[
+    Creates a new signature vector from a table.
+
+    @param t the table to create the signature from.
+    @return the created signature.
+]]
+function signature.new(t)
+    assert(type(t) == "table" and #t == signatureLength,
+        "'t' is not a valid signature")
+    return setmetatable(t, private.signatureMetatable)
+end
+
+--[[
+    Creates a new signature initialized with all zeros and returns it.
+
+    @return the new zero signature.
+]]
+function signature.zero()
+    local result = {}
+    for i = 1, signatureLength do
+        result[i] = 0
+    end
+    return signature.new(result)
+end
+
+--[[
+    Get the signature for a block with the specified alias.
+
+    @param name the name of the block.
+    @return the current signature, which may be signature.zero() if uncalibrated,
+        as well as the number of calibration.
+]]
+function signature.get(name)
+    private.loadAndOrInit(name)
+    local signature = state.signatures[name]
+    return signature.value, signature.count
+end
+
+--[[
+    Set the calibrated signature for the block with the specified alias.
+
+    @param name the name of the block.
+    @param signature the signature.
+    @param weight the weight of the signature (e.g. the number of samples it
+        is made up of).
+]]
+function signature.set(name, signature, weight)
+    assert(type(signature) == "table" and #signature == signatureLength,
+        "'signature' is not a valid signature")
+    assert(type(weight) == "number" and weight == math.floor(weight),
+        "'weight' must be an integral number")
+
+    -- Initialize the table entry, load state if necessary, store new value.
+    private.loadAndOrInit(name)
+    state.signatures[name].value = signature
+    state.signatures[name].count = weight
+
+    -- Save the new values back to disk.
+    local file = fs.open(signaturesFile, "w")
+    file.write(textutils.serialize(state.signatures))
+    file.close()
+
+    -- Return the new values, for convenience.
+    return signature, weight
+end
+
+--[[
+    Tries to determine the type of the block the specified signature represents
+    from the list of calibrated blocks.
+
+    @param signature the signature to look up. This may also be a table of
+        multiple signatures for higher accuracy.
+    @return (name, delta) on success, with the block name and the difference of
+        the measured signature to the calibrated signature; nil otherwise.
+]]
+function signature.find(signature)
+    -- Get the average if a table was given.
+    if type(signature[1]) == "table" then
+        local sum = signature.zero()
+        for _, entry in ipairs(signature) do
+            sum = sum + entry
+        end
+        signature = sum / #signature
+    end
+
+    -- Initialize or load the table entry, then compare the signature to all
+    -- known ones, using the MSE as a metric. This works passably well by just
+    -- checking if it's below some user defined threshold.
+    private.loadAndOrInit()
+    local bestName, bestMSE = nil, math.huge
+    for name, entry in pairs(state.signatures) do
+        local mse = signature:mse(entry.value)
+        if mse < searchThreshold and mse < bestMSE then
+            bestName = name
+            bestMSE = mse
+        end
+    end
+    return bestName, bestMSE
+end
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- Internals                                                                 --
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+-- Start with an empty state.
+state = {}
+
+-- Private namespace.
+private = {}
+
+-- The metatable set for wrapped cameras.
+private.cameraMetatable = {
+    calibrate = calibrate,
+    trigger = function(self)
+        local metatable = getmetatable(self)
+        local function timestamp()
+            -- OS time is ingame, multiply it by 1000 to get ticks, and then
+            -- divide twenty (ticks per second) to get real time seconds.
+            return (os.time() + os.day() * 24) * 1000 / 20
+        end
+        local now = timestamp()
+        local delay = cooldown - (now - metatable.lastTrigger)
+        if delay > 0 then
+            os.sleep(delay)
+        end
+        metatable.lastTrigger = timestamp()
+        return signature.new({metatable.camera.trigger()})
+    end
+}
+
+-- The metatable set for signatures.
+private.signatureMetatable = {
+    __add = function(self, other)
+        assert(type(self) == "table" and #self == signatureLength,
+            "'self' is not a valid signature")
+        assert(type(other) == "table" and #other == signatureLength,
+            "'other' is not a valid signature")
+        local result = {}
+        for i = 1, signatureLength do
+            result[i] = self[i] + other[i]
+        end
+        return signature.new(result)
+    end,
+    __sub = function(self, other)
+        return self + (-other)
+    end,
+    __mul = function(self, other)
+        assert(type(self) == "table" and #self == signatureLength,
+            "'self' is not a valid signature")
+        assert(type(other) == "number",
+            "'other' must be a number")
+        local result = {}
+        for i = 1, signatureLength do
+            result[i] = self[i] * other
+        end
+        return signature.new(result)
+    end,
+    __div = function(self, other)
+        return self * (1 / other)
+    end,
+    __unm = function(self)
+        assert(type(self) == "table" and #self == signatureLength,
+            "'self' is not a valid signature")
+        local result = {}
+        for i = 1, signatureLength do
+            result[i] = -self[i]
+        end
+        return signature.new(result)
+    end,
+    __index = {
+        render = function(self, indent)
+            assert(type(self) == "table" and #self == signatureLength,
+                "'self' is not a valid signature")
+            assert(indent == nil or type(indent) == "number" and
+                   indent == math.floor(indent),
+                "'indent' must be an integral number or omitted")
+            if indent then
+                local x, y = term.getCursorPos()
+                term.setCursorPos(indent or x, y)
+            end
+            local print_ = print
+            local function print(...)
+                print_(...)
+                local x, y = term.getCursorPos()
+                term.setCursorPos(indent or x, y)
+            end
+            print("+----------------+")
+            write("|")
+            local writeBrightness
+            local function scaleAndClamp(value, min, max)
+                return math.max(min, math.min(max, math.floor(value * max)))
+            end
+            if term.isColor() then
+                -- These are colors with increasing brightness, where the
+                -- colors below the mean are cool colors (blue) and the ones
+                -- above are warm (orange/yellow). We want the table to be
+                -- symmetric (i.e. equal number below and above average).
+                local brightness = {32768, 2048, 8, 4, 2, 16, 1}
+                writeBrightness = function(value)
+                    local level = scaleAndClamp(value, 1, #brightness)
+                    term.setBackgroundColor(brightness[level])
+                    write(' ')
+                    term.setBackgroundColor(colors.black)
+                end
+            else
+                -- Characters with increasing "brightness". We want symbols to
+                -- not distract the brain with meaningful characters (it's much
+                -- easier to see an overall pattern if the single parts don't
+                -- make any sense on their own). We want the table to be]
+                -- symmetric (i.e. equal number below and above average).
+                local brightness = " .-=+%#@"
+                writeBrightness = function(value)
+                    local level = scaleAndClamp(value, 1, brightness:len())
+                    write(brightness:sub(level, level))
+                end
+            end
+            for i = 1, signatureLength do
+                writeBrightness(self[i] / 2 + 0.5)
+                if i % 16 == 0 then
+                    print("|")
+                    if i < signatureLength then
+                        write("|")
+                    end
+                end
+            end
+            print_("+----------------+")
+        end,
+        mse = function(self, other)
+            assert(type(self) == "table" and #self == signatureLength,
+                "'self' is not a valid signature")
+            assert(type(other) == "table" and #other == signatureLength,
+                "'other' is not a valid signature")
+            local acc = 0
+            for i = 1, signatureLength do
+                local delta = self[i] - other[i]
+                acc = acc + delta * delta
+            end
+            return acc / signatureLength
+        end
+    }
+}
+
+--[[
+    Creates the signatures lookup table if it doesn't exist, and if it has to
+    create it checks if we have a stored state and restores it if so. After
+    that creates an entry for the specified name if it didn't exist yet.
+
+    @param the block alias to ensure an entry exists for.
+]]
+function private.loadAndOrInit(name)
+    if not state.signatures then
+        if fs.exists(signaturesFile) and not fs.isDir(signaturesFile) then
+            local file = fs.open(signaturesFile, "r")
+            state.signatures = textutils.unserialize(file.readAll())
+            file.close()
+            for _, entry in pairs(state.signatures) do
+                setmetatable(entry.value, private.signatureMetatable)
+            end
+        else
+            state.signatures = {}
+        end
+    end
+    if name and not state.signatures[name] then
+        state.signatures[name] = {value = signature.zero(), count = 0}
+    end
+end
+
+--[[
+    Checks all sides for camera peripherals and returns the first found.
+
+    @return a wrapped camera peripheral on success; nil otherwise.
+]]
+function private.findCamera()
+    local camera
+    for _, side in pairs(rs.getSides()) do
+        if peripheral.isPresent(side) and
+           peripheral.getType(side) == "camera"
+        then
+            return peripheral.wrap(side), side
+        end
+    end
+    return nil
+end
+
+--[[
+    Formats the remaining time based on the number iterations remaining.
+
+    @param remaining the number of iterations left.
+    @return a formatted time string (HH:mm:ss).
+]]
+function private.remainder(remaining)
+    local time = math.ceil(remaining * cooldown)
+    local result
+    if time < 60 then
+        if time == 1 then
+            return "1 second"
+        end
+        return time .. " seconds"
+    else
+        result = ":" .. string.format("%02d", time % 60)
+        time = math.floor(time / 60)
+        if time < 60 then
+            return time .. result
+        end
+        return math.floor(time / 60) .. ":" .. string.format("%02d", time % 60) .. result
+    end
+end

@@ -22,6 +22,18 @@ You can interact with this API from the shell by using the [daemon-conf](program
 
 This API provides a single function, `stacktrace.tpcall`, which is functionally the same as `pcall`, except that it will provide a full stacktrace instead of just the exact error location. I find it useful to hook it in as a replacement for `pcall` in my startup script.
 
+[Blocking API Loader](apis/bapil)
+=====================
+
+This API provides an alternative to the build-in os.loadAPI function. It will not print messages to the screen but return the error message as a second result instead. Also, it will block (sleep) if the API in question is currently being loaded (and not return false). A custom timeout for this blocking behavior can be provided.
+
+[Logger](apis/logger)
+========
+
+A minimalistic logger that provides uniform log output with automatic date, time and level prefixing. Message format is like this:
+`YYYY-MM-DD HH:MM [LEVEL] message`
+The date is generated from the current `os.day()` (including leap-years!) and starts in year zero. Log file names can automatically be postfixed with the current day, for programs that log a *lot*, to keep file size at an acceptable size and make deleting old log entries easier.
+
 [Persistent Redstone API](apis/predstone)
 =========================
 

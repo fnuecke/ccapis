@@ -59,7 +59,7 @@ version = "1.0"
 ]]
 function loadAPI(path, timeout)
     -- Resolve the path and get the API's name from the file name.
-    path = private.resolveAPI(path)
+    path = resolveAPI(path)
     local name = fs.getName(path):gsub("%.lua$", "")
 
     -- Check if the API is already loaded.
@@ -121,7 +121,6 @@ function loadAPI(path, timeout)
 
     -- Done loading the API. Release lock.
     private.loadingAPIs[name] = false
-
     return result, reason
 end
 
@@ -173,6 +172,28 @@ function setPath(path)
 end
 
 --[[
+    Tries to resolve a path using our internal path variable.
+
+    This is essentially a simplified version of what shell.resolveProgram()
+    does, but for APIs.
+
+    @param the path or name of the API.
+    @return the resolved path, which may be the same as the specified one.
+]]
+function resolveAPI(name)
+    if string.sub(name, 1, 1) == '/' or string.sub(name, 1, 1) == '\\' then
+        return name
+    end
+    for path in string.gmatch(private.path, "[^:]+") do
+        path = fs.combine(path, name)
+        if fs.exists(path) and not fs.isDir(path) then
+            return path
+        end
+    end
+    return name
+end
+
+--[[
     Replaces the API loading related functions in the OS API.
 
     @param restore whether to restore the original OS API functions.
@@ -204,29 +225,7 @@ end
 private = {}
 
 -- The list of paths we can use to search for APIs when given relative paths.
-private.path =
-    ".:/rom/apis" .. (turtle and ":/rom/apis/turtle" or "") .. ":/apis"
+private.path = "/rom/apis" .. (turtle and ":/rom/apis/turtle" or "") .. ":/apis"
 
 -- Table of currently loading APIs.
 private.loadingAPIs = {}
-
---[[
-    Tries to resolve a path using our internal path variable.
-
-    This is essentially a simplified version of what shell.resolveProgram does.
-
-    @param the path or name of the API.
-    @return the resolved path, which may be the same as the specified one.
-]]
-function private.resolveAPI(name)
-    if string.sub(name, 1, 1) == '/' or string.sub(name, 1, 1) == '\\' then
-        return name
-    end
-    for path in string.gmatch(private.path, "[^:]+") do
-        path = fs.combine(path, name)
-        if fs.exists(path) and not fs.isDir(path) then
-            return path
-        end
-    end
-    return name
-end

@@ -16,8 +16,8 @@
       label = string } -- The label of the turtle.
 ]]
 
-os.loadAPI("lama")
-assert(lama, "requires LAMA")
+assert(os.loadAPI("lama"))
+assert(os.loadAPI("apis/logger"))
 
 -------------------------------------------------------------------------------
 -- Config                                                                    --
@@ -30,6 +30,9 @@ local channel = 14341
 -- Program logic                                                             --
 -------------------------------------------------------------------------------
 
+-- Get our logger. We don't really need to rotate since we log very little.
+local log = logger.new("positiond")
+
 -- Find an attached modem by checking all sides.
 local modem
 for _, side in pairs(redstone.getSides()) do
@@ -38,7 +41,17 @@ for _, side in pairs(redstone.getSides()) do
         break
     end
 end
-assert(modem, "no modem found")
+if not modem then
+    return log:err("No modem found!")
+end
+
+-- Wait a bit to allow other startup scripts to initialize the API (in
+-- particular the startup script LAMA itself creates). We do this because
+-- initialization can take a while (completing unfinished movements), and we
+-- want to be able to read the position while it initializes.
+log:info("Modem found, waiting a bit for someone else to initialize LAMA.")
+os.sleep(5)
+log:info("Starting to send our position.")
 
 -- Remember the last position we sent, to avoid sending when nothing changed.
 local px, py, pz, pf

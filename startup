@@ -1,11 +1,21 @@
+-- Skip if we already ran.
+if startup then
+    return
+end
+
+-- Install custom API loader.
+os.loadAPI("apis/bapil")
+bapil.hijackOSAPI()
+
 -- Load stacktrace API and install tpcall as replacement for pcall.
-os.loadAPI("apis/stacktrace")
+assert(os.loadAPI("apis/stacktrace"))
 _G.pcall = stacktrace.tpcall
 
 -- Load startup API and perform startup.
-os.loadAPI("apis/startup")
+assert(os.loadAPI("apis/startup"))
 startup.run()
 
 -- Load daemon API and install it.
-os.loadAPI("apis/daemon")
+-- Alternatively: have this in a startup script.
+assert(os.loadAPI("apis/daemon"))
 daemon.install()

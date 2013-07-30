@@ -13,8 +13,8 @@
     Daemons should never interact with the terminal directly, since that would
     interfere with the currently running foreground program (say, the shell).
     For that reason the global write, print and printError functions are
-    replaced with ones that write to the log file as configured in the logFile
-    variable (default: daemon.log) during the execution of the daemons.
+    replaced with ones that write to a log file during the execution of the
+    daemons.
 
     This API works by hijacking the global coroutine.resume() function. It will
     forward any calls to unknown threads as-is and will take care of filtering
@@ -22,6 +22,8 @@
     threads. Note that while resuming any threads it will restore the actual
     coroutine.restore() function, to avoid recursion.
 ]]
+
+assert(os.loadAPI("apis/logger"))
 
 -------------------------------------------------------------------------------
 -- Config                                                                    --
@@ -32,12 +34,6 @@ local daemonPath = "/daemons"
 
 -- The extension daemon scripts have that should be ignored.
 local disabledPostfix = "disabled"
-
--- The name of the file to which to log any output that daemons produce.
-local logFile = "/daemon.log"
-
--- Automatically clear the log file the first time the API is loaded.
-local clearLog = true
 
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
@@ -57,6 +53,9 @@ end
 -- Internal forward declarations. They have to be declared here so that
 -- functions can access them.
 local state, private
+
+-- Get our logger.
+local log = logger.new("daemon", true)
 
 -------------------------------------------------------------------------------
 -- Public API                                                                --
@@ -712,53 +711,42 @@ end
 --[[
     Like write() but writes to the logfile.
 
+    @param ... the values to log.
     @private
 ]]
 function private.logWrite(...)
-    local file = fs.open(logFile, "a")
-    for _, s in ipairs({...}) do
-        file.write(s)
-    end
-    file.close()
+    log:info(nil, ...)
 end
 
 --[[
     Like print() but writes to the logfile.
 
+    @param ... the values to log.
     @private
 ]]
 function private.logPrint(...)
-    local file = fs.open(logFile, "a")
-    for _, s in ipairs({...}) do
-        file.write(s)
-    end
-    file.write("\n")
-    file.close()
+    log:info(nil, ...)
 end
 
 --[[
     Like printError() but writes to the logfile and prepends the message with
     the string "[ERROR] ".
 
+    @param ... the values to log.
     @private
 ]]
 function private.logPrintError(...)
-    local file = fs.open(logFile, "a")
-    file.write("[ERROR] ")
-    for _, s in ipairs({...}) do
-        file.write(s)
-    end
-    file.write("\n")
-    file.close()
+    log:err(nil, ...)
 end
 
 --[[
     Read input from the terminal, or rather, it doesn't.
 
+    @return nil, always.
     @private
 ]]
-function private.logRead(...)
-    error("Cannot read input from terminal in this context.")
+function private.logRead()
+    return nil
 end
 
 --[[
@@ -800,23 +788,9 @@ assert(not fs.exists(daemonPath) or fs.isDir(daemonPath),
     "Folder for daemon scripts cannot be created because a file " ..
     "with that name already exists ('" .. daemonPath .. "').")
 
--- Ensure we have a path set for our daemon files.
-assert(type(logFile) == "string" and logFile ~= "",
-    "The setting 'logFile' must be a non-empty string.")
-
--- Ensure the log file is not a folder.
-assert(not fs.exists(logFile) or not fs.isDir(logFile),
-    "Log file cannot be created because a folder with that name " ..
-    "already exists ('" .. logFile .. "').")
-
 -------------------------------------------------------------------------------
 -- Initialization                                                            --
 -------------------------------------------------------------------------------
 
 -- Create folder if it doesn't exist.
 fs.makeDir(daemonPath)
-
--- Clear the log file.
-if clearLog then
-    fs.open(logFile, "w").close()
-end

@@ -7,7 +7,7 @@
     This script allows interacting with the daemon API via the shell.
 ]]
 
-os.loadAPI("apis/daemon")
+assert(os.loadAPI("apis/daemon"))
 
 -------------------------------------------------------------------------------
 -- Commands                                                                  --

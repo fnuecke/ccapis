@@ -7,7 +7,7 @@
     This script allows interacting with the camera API via the shell.
 ]]
 
-os.loadAPI("apis/camera")
+assert(os.loadAPI("apis/camera"))
 
 -------------------------------------------------------------------------------
 -- Commands                                                                  --

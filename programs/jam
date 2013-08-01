@@ -26,6 +26,7 @@
     are still working (if any).
 ]]
 
+assert(os.loadAPI("apis/bapil"))
 assert(os.loadAPI("apis/logger"))
 assert(os.loadAPI("apis/startup"))
 assert(os.loadAPI("apis/state"))

@@ -32,13 +32,6 @@ assert(os.loadAPI("apis/state"))
 assert(os.loadAPI("apis/lama"))
 
 -------------------------------------------------------------------------------
--- Config                                                                    --
--------------------------------------------------------------------------------
-
--- Whether to place torches in the holes we dig (when moving up).
-local placeTorches = true
-
--------------------------------------------------------------------------------
 -- Semi-config (you normally won't want to touch these)                      --
 -------------------------------------------------------------------------------
 
@@ -184,9 +177,112 @@ end)
         ignoreCount = private.setupIgnoredBlocks()
     end
 
-    -- Drop any duplicates we have of the stuff we're supposed to ignore.
+    -- Drop any duplicates we have of the stuff we're supposed to ignore. Do
+    -- not count those drops into our sampling (that we use to determine which
+    -- ignored blocks come the most often, to make sure we compare to them
+    -- first for an early exit and thus faster average comparison time).
     dontCountThat = true
+    switchTo("goto_drop") -- Equivalent to drop, but more uniform flow.
+end)
+
+--[[
+    Go back to the docking station to drop stuff we picked up.
+]]
+:add("goto_drop", function()
+    log:info("Going home to deliver the goods.")
+    turtle.select(1)
+    -- Player being invulnerable can block this, so we have to keep trying.
+    repeat
+        local x, y, z = lama.get()
+        local path = private.generatePath(x, y, z, 0, 0, 0, "home")
+    until lama.navigate(path, math.huge, true)
     switchTo("drop")
+end)
+
+--[[
+    Actually drop off anything in our inventory that's surplus.
+]]
+:add("drop", function()
+    if not dontCountThat then
+        log:info("Dumping what I found!")
+    end
+    -- Drop any surplus of the blocks we're supposed to ignore. We may have
+    -- gotten some when digging down.
+    dropped = dropped or {}
+    dropping = dropping or {}
+    for slot = 1, ignoreCount do
+        if turtle.getItemCount(slot) > 1 then
+            -- Keep track of how many of that type we dropped. We use this to
+            -- accumulate a growing sample size which allows us to sort the
+            -- blocks we should ignore in a way so that the first blocks are
+            -- more likely to be found, which should improve overall speed,
+            -- since on average it takes less time to check each block come by.
+            dropping[slot] = dropping[slot] or (turtle.getItemCount(slot) - 1)
+            save()
+
+            private.drop(slot, 1)
+
+            -- Update after successful drop (we do this in two phases in case
+            -- we're interrupted while dropping).
+            if not dontCountThat then
+                dropped[slot] = (dropped[slot] or 0) + dropping[slot]
+            end
+            dropping[slot] = nil
+            save()
+        end
+    end
+
+    -- If anything is left as marked being dropped we were shut down while
+    -- dropping something, but the drop was actually successful. I'm not sure
+    -- if this can really happen, but just to make sure...
+    if not dontCountThat then
+        for slot, count in pairs(dropping) do
+            dropped[slot] = (dropped[slot] or 0) + dropping[slot]
+        end
+    end
+    dropping = nil
+    save()
+
+    -- Drop all the items we actually found.
+    droppingSurplus = droppingSurplus or {}
+    for slot = ignoreCount + 1, 16 do
+        if slot ~= torchSlot then
+            -- It may be that we found so many blocks that we're actually
+            -- supposed to ignore while digging down, that they spilled into
+            -- another slot. Check this here.
+            if turtle.getItemCount(slot) > 0 then
+                turtle.select(slot)
+                for ignoreSlot = 1, ignoreCount do
+                    if turtle.compareTo(ignoreSlot) then
+                        -- This is a block we're actually supposed to ignore!
+                        droppingSurplus[slot] = droppingSurplus[slot] or
+                            {ignoreSlot, turtle.getItemCount(slot)}
+                        save()
+                    end
+                end
+            end
+
+            private.drop(slot)
+        end
+    end
+
+    -- Save the accumulated surplus drops.
+    if not dontCountThat then
+        for _, entry in pairs(droppingSurplus) do
+            local slot, count = entry[1], entry[2]
+            dropped[slot] = (dropped[slot] or 0) + count
+        end
+    end
+    droppingSurplus = nil
+    dontCountThat = nil
+    save()
+
+    -- Continue with our current job, or get a new one if we don't have one.
+    if job then
+        switchTo("refuel_job")
+    else
+        switchTo("get_job")
+    end
 end)
 
 --[[
@@ -198,7 +294,12 @@ end)
     lama.turn((diskSide + 2) % 4)
 
     -- Wait a bit to finish moving and connect to the disk drive.
-    os.sleep(1)
+    for i = 1, 20 do
+        if disk.isPresent(rsDiskSide) then
+            break
+        end
+        os.sleep(0.1)
+    end
 
     assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
@@ -443,106 +544,6 @@ end)
 
     job = nil
     switchTo("goto_drop")
-end)
-
---[[
-    Go back to the docking station to drop stuff we picked up.
-]]
-:add("goto_drop", function()
-    log:info("Going home to deliver the goods.")
-    turtle.select(1)
-    -- Player being invulnerable can block this, so we have to keep trying.
-    repeat
-        local x, y, z = lama.get()
-        local path = private.generatePath(x, y, z, 0, 0, 0, "home")
-    until lama.navigate(path, math.huge, true)
-    switchTo("drop")
-end)
-
---[[
-    Actually drop off anything in our inventory that's surplus.
-]]
-:add("drop", function()
-    if not dontCountThat then
-        log:info("Dumping what I found!")
-    end
-    -- Drop any surplus of the blocks we're supposed to ignore. We may have
-    -- gotten some when digging down.
-    dropped = dropped or {}
-    dropping = dropping or {}
-    for slot = 1, ignoreCount do
-        if turtle.getItemCount(slot) > 1 then
-            -- Keep track of how many of that type we dropped. We use this to
-            -- accumulate a growing sample size which allows us to sort the
-            -- blocks we should ignore in a way so that the first blocks are
-            -- more likely to be found, which should improve overall speed,
-            -- since on average it takes less time to check each block come by.
-            dropping[slot] = dropping[slot] or (turtle.getItemCount(slot) - 1)
-            save()
-
-            private.drop(slot, 1)
-
-            -- Update after successful drop (we do this in two phases in case
-            -- we're interrupted while dropping).
-            if not dontCountThat then
-                dropped[slot] = (dropped[slot] or 0) + dropping[slot]
-            end
-            dropping[slot] = nil
-            save()
-        end
-    end
-
-    -- If anything is left as marked being dropped we were shut down while
-    -- dropping something, but the drop was actually successful. I'm not sure
-    -- if this can really happen, but just to make sure...
-    if not dontCountThat then
-        for slot, count in pairs(dropping) do
-            dropped[slot] = (dropped[slot] or 0) + dropping[slot]
-        end
-    end
-    dropping = nil
-    save()
-
-    -- Drop all the items we actually found.
-    droppingSurplus = droppingSurplus or {}
-    for slot = ignoreCount + 1, 16 do
-        if slot ~= torchSlot then
-            -- It may be that we found so many blocks that we're actually
-            -- supposed to ignore while digging down, that they spilled into
-            -- another slot. Check this here.
-            if turtle.getItemCount(slot) > 0 then
-                turtle.select(slot)
-                for ignoreSlot = 1, ignoreCount do
-                    if turtle.compareTo(ignoreSlot) then
-                        -- This is a block we're actually supposed to ignore!
-                        droppingSurplus[slot] = droppingSurplus[slot] or
-                            {ignoreSlot, turtle.getItemCount(slot)}
-                        save()
-                    end
-                end
-            end
-
-            private.drop(slot)
-        end
-    end
-
-    -- Save the accumulated surplus drops.
-    if not dontCountThat then
-        for _, entry in pairs(droppingSurplus) do
-            local slot, count = entry[1], entry[2]
-            dropped[slot] = (dropped[slot] or 0) + count
-        end
-    end
-    droppingSurplus = nil
-    dontCountThat = nil
-    save()
-
-    -- Continue with our current job, or get a new one if we don't have one.
-    if job then
-        switchTo("refuel_job")
-    else
-        switchTo("get_job")
-    end
 end)
 
 --[[
@@ -1355,18 +1356,20 @@ assert(type(jobFile) == "string" and jobFile ~= "",
 
 assert(rawget(lama.side, dropSide),
     "The setting 'dropSide' must be a valid lama.side.")
+
 assert(rawget(lama.side, fuelSide),
     "The setting 'fuelSide' must be a valid lama.side.")
-assert(rawget(lama.side, torchSide) or not placeTorches,
+
+assert(rawget(lama.side, torchSide),
     "The setting 'torchSide' must be a valid lama.side.")
+
 assert(rawget(lama.side, diskSide),
     "The setting 'diskSide' must be a valid lama.side.")
 
 assert(dropSide ~= fuelSide and fuelSide ~= diskSide and
-       dropSide ~= diskSide and (not placeTorches or (
-       dropSide ~= torchSide and fuelSide ~= torchSide and
-       diskSide ~= torchSide)),
-       "Duplicate side configuration detected. Make sure the side for each "..
+       dropSide ~= diskSide and diskSide ~= torchSide and
+       dropSide ~= torchSide and fuelSide ~= torchSide,
+       "Duplicate side configuration detected. Make sure the side for each " ..
        "docking bay element (disk, drop, fuel and torch chest) is different.")
 
 assert(type(rsDiskSide) == "string" and rsDiskSide ~= "",
@@ -1382,6 +1385,7 @@ if args[1] == "reset" then
     assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
     local diskPath = disk.getMountPath(rsDiskSide)
+
     if #fs.list(diskPath) > 0 then
         term.clear()
         term.setCursorPos(1, 1)
@@ -1397,15 +1401,16 @@ if args[1] == "reset" then
                 fs.delete(path)
                 os.sleep(0.1)
             end
-            program:reset()
-            startup.disable("jam")
-            return true
         else
             print("Aborting.")
             os.sleep(0.1) -- Eat key event.
             return false
         end
     end
+
+    program:reset()
+    startup.disable("jam")
+    return true
 end
 
 -- Run our program.

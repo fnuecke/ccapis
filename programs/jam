@@ -31,8 +31,6 @@ assert(os.loadAPI("apis/startup"))
 assert(os.loadAPI("apis/state"))
 assert(os.loadAPI("lama"))
 
-assert(turtle, "JAM only works on turtles.")
-
 -------------------------------------------------------------------------------
 -- Config                                                                    --
 -------------------------------------------------------------------------------
@@ -40,13 +38,17 @@ assert(turtle, "JAM only works on turtles.")
 -- Whether to place torches in the holes we dig (when moving up).
 local useTorches = true
 
+-- Whether to write our progress into a log file (each time the program changes
+-- its state it would log that).
+local writeLog = true
+
+-------------------------------------------------------------------------------
+-- Semi-config (you normally don't want to touch these)                      --
+-------------------------------------------------------------------------------
+
 -- File in which to store current program state on the turtle, for resuming the
 -- program after a reboot.
 local stateFile = "/.jam-state"
-
--- The name of the file in which the camera API stores its signatures. This is
--- only used if a camera is attached to the turtle.
-local signaturesFile = "/.camera-signatures"
 
 -- The path to the file with camera signatures stored on the floppy disk. This
 -- is prefixed with the mount path so it should be a relative path.
@@ -73,9 +75,6 @@ local torchSide = lama.side.right
 -- disk drive we use to track job progress on is at.
 local diskSide = lama.side.back
 
--- Same as above but using redstone.getSides() constants (for disk API).
-local rsDiskSide = "back"
-
 -------------------------------------------------------------------------------
 -- Internal variables / constants                                            --
 -------------------------------------------------------------------------------
@@ -94,8 +93,19 @@ local tempSlot = 15
 -- The slot number in which we keep our torches.
 local torchSlot = 16
 
--- The log we use.
-local log = logger.new("jam")
+-- Same as diskSide but using redstone.getSides() constants (for disk API).
+local rsDiskSide = ({[lama.side.forward] = "front",
+                     [lama.side.right] = "right",
+                     [lama.side.back] = "back",
+                     [lama.side.left] = "left"})[diskSide]
+
+-- The name of the file in which the camera API stores its signatures. This is
+-- only used if a camera is attached to the turtle.
+local signaturesFile = (camera and camera.savePath and camera.savePath()) or
+                       "/.camera-signatures"
+
+-- The log we use. Use dummy logger if we're not supposed to log stuff.
+local log = writeLog and logger.new("jam") or {info=function() end}
 
 -------------------------------------------------------------------------------
 -- Program states                                                            --
@@ -112,18 +122,21 @@ local program = state.new(stateFile)
 ]]
 :add("setup", function()
     -- Make sure there's a disk drive.
-    assert(disk.isPresent("back"),
+    assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
-    local diskPath = disk.getMountPath("back")
-    local jobFile = fs.combine(diskPath, jobFile)
+    local diskPath = disk.getMountPath(rsDiskSide)
 
     -- If there's no job file on the disk drive we're starting from scratch.
+    local jobFile = fs.combine(diskPath, jobFile)
     if not fs.exists(jobFile) then
         return private.setupDigSite()
     elseif fs.isDir(jobFile) then
         error("Job file path invalid because a folder with that name exists.")
     end
 
+    -- Based on the context, ask for the blocks to ignore. If we're a camera
+    -- turtle and there are signatures ask for the one to ignore, otherwise ask
+    -- the user to place some blocks in our inventory.
     local diskSignaturesFile = fs.combine(diskPath, diskSignaturesFile)
     if camera and camera.wrap() and
        fs.exists(diskSignaturesFile) and
@@ -156,9 +169,9 @@ end)
     -- Wait a bit to finish moving and connect to the disk drive.
     os.sleep(1)
 
-    assert(disk.isPresent("back"),
+    assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
-    local diskPath = disk.getMountPath("back")
+    local diskPath = disk.getMountPath(rsDiskSide)
     local jobFile = fs.combine(diskPath, jobFile)
 
     local file = fs.open(jobFile, "r")
@@ -527,6 +540,7 @@ end)
     for slot = 1, 16 do
         private.drop(slot)
     end
+    turtle.select(1)
     switchTo("goto_end")
 end)
 
@@ -566,8 +580,8 @@ private = {}
     This function never returns, it reboots the turtle after it has run.
 ]]
 function private.setupDigSite()
-    disk.setLabel("back", "JAM Job State")
-    local diskPath = disk.getMountPath("back")
+    disk.setLabel(rsDiskSide, "JAM Job State")
+    local diskPath = disk.getMountPath(rsDiskSide)
 
     -- Ask the user how big of a dig site he'd like to create.
     term.clear()
@@ -651,36 +665,49 @@ function private.setupDigSite()
     file.write(textutils.serialize({totalJobs = totalJobs}))
     file.close()
 
+    -- We write a startup file to the disk drive that will install our
+    -- environment to any non-initialized turtles started up in front of it.
     local startupFile = fs.combine(diskPath, "startup")
     print(" > " .. startupFile)
     local file = fs.open(startupFile, "w")
     file.write(string.format([=[-- Automatically generated startup file.
+-- Ignore anything that isn't a turtle.
 if not turtle then
     return shell.run("/startup")
 end
-if not disk.isPresent("back") then
+
+-- Ignore if we're on the wrong side.
+local diskSide = %q
+if not disk.isPresent(diskSide) then
     return
 end
+local diskPath = disk.getMountPath(diskSide)
 
-if not fs.exists("/startup") then
-    -- New system, install APIs.
-    local diskPath = disk.getMountPath("back")
-    local install = {
-        {"apis/bapil", fs.combine(diskPath, "apis/bapil")},
-        {"apis/logger", fs.combine(diskPath, "apis/logger")},
-        {"apis/stacktrace", fs.combine(diskPath, "apis/stacktrace")},
-        {"apis/startup", fs.combine(diskPath, "apis/startup")},
-        {"apis/state", fs.combine(diskPath, "apis/state")},
-        {"lama", fs.combine(diskPath, "lama")}
-    }
-    fs.makeDir("apis")
-    for _, file in ipairs(install) do
-        if not fs.exists(file[1]) then
-            fs.copy(file[2], file[1])
-        elseif fs.isDir(file[1]) then
-            error("Bad installation, " .. file[1] .. " is a folder.")
-        end
+-- Set label if necessary.
+if os.getComputerLabel() == nil or os.getComputerLabel() == "" then
+    os.setComputerLabel("JAM-" .. os.getComputerID())
+end
+
+-- Install APIs if they're not there yet.
+local install = {
+    {"apis/bapil", fs.combine(diskPath, "apis/bapil")},
+    {"apis/logger", fs.combine(diskPath, "apis/logger")},
+    {"apis/stacktrace", fs.combine(diskPath, "apis/stacktrace")},
+    {"apis/startup", fs.combine(diskPath, "apis/startup")},
+    {"apis/state", fs.combine(diskPath, "apis/state")},
+    {"lama", fs.combine(diskPath, "lama")}
+}
+fs.makeDir("apis")
+for _, file in ipairs(install) do
+    if not fs.exists(file[1]) then
+        fs.copy(file[2], file[1])
+    elseif fs.isDir(file[1]) then
+        error("Bad installation, " .. file[1] .. " is a folder.")
     end
+end
+
+-- Install startup file if there isn't one, yet. Otherwise just run it.
+if not fs.exists("/startup") then
     local file = fs.open("/startup", "w")
     file.write([[-- Skip if we already ran.
 if startup then
@@ -699,20 +726,22 @@ _G.pcall = stacktrace.tpcall
 assert(os.loadAPI("apis/startup"))
 startup.run()]])
     file.close()
+
+     -- Don't reboot immediately in startup. Weird stuff happens otherwise.
     os.sleep(0.1)
     os.reboot()
 else
     shell.run("/startup")
 end
 
+assert(startup, "Bad installation, startup API not loaded automatically.")
+
 -- Copy signatures to the turtle if it's a camera turtle.
 if camera and camera.wrap() then
     local signaturesFile = %q
     -- Don't overwrite signatures already on the turtle.
     if not fs.exists(signaturesFile) then
-        local diskPath = disk.getMountPath("back")
-        local diskSignaturesFile = %q
-        diskSignaturesFile = fs.combine(diskPath, diskSignaturesFile)
+        local diskSignaturesFile = fs.combine(diskPath, %q)
         if fs.exists(diskSignaturesFile) and
            not fs.isDir(diskSignaturesFile)
         then
@@ -721,21 +750,19 @@ if camera and camera.wrap() then
     end
 end
 
-assert(startup, "JAM requires the startup API.")
-if not startup.isEnabled("jam") then
-    -- Overwrite in case of updates.
+-- Overwrite this program in case of updates.
+if not startup.isEnabled("jam") or fs.getSize() then
     startup.remove("jam")
-    local diskPath = disk.getMountPath("back")
     local jamFile = fs.combine(diskPath, "jam")
     startup.addFile("jam", 20, jamFile)
     startup.enable("jam")
     os.sleep(0.1)
     os.reboot()
-end]=], signaturesFile, diskSignaturesFile))
+end]=], rsDiskSide, signaturesFile, diskSignaturesFile))
     file.close()
 
     -- Allow the user to read what we did there...
-    os.sleep(3)
+    os.sleep(2)
 
     -- Reboot to initialize ourself from the disk.
     os.reboot()
@@ -853,6 +880,22 @@ function private.setupIgnoredBlocks()
               "in. Meaning at least two free slots  \n" ..
               "in total. Can you do that for me?    \n")
         print("Press [Enter] to try again :/")
+        term.setCursorBlink(true)
+        repeat
+            local _, code = os.pullEvent("key")
+        until code == keys.enter
+        term.setCursorBlink(false)
+        return -- restarts the state
+    elseif occupied >= tempSlot or occupied >= torchSlot then
+        print("Unless you messed with the code this \n" ..
+              "should not happen: the inventory     \n" ..
+              "range used for blocks to ignore      \n" ..
+              "intersects with either the torch or  \n" ..
+              "or our temporary working slot. You'll\n" ..
+              "have to specify less than " ..
+              math.min(tempSlot, torchSlot) ..
+              " block   \n" ..
+              "types. Press [Enter] to try again... \n")
         term.setCursorBlink(true)
         repeat
             local _, code = os.pullEvent("key")
@@ -1193,15 +1236,49 @@ function private.restockTorches()
 end
 
 -------------------------------------------------------------------------------
+-- Environment checking                                                      --
+-------------------------------------------------------------------------------
+
+assert(turtle, "JAM only works on turtles.")
+
+assert(type(stateFile) == "string" and stateFile ~= "",
+    "The setting 'stateFile' must be a non-empty string.")
+
+assert(type(diskSignaturesFile) == "string" and diskSignaturesFile ~= "",
+    "The setting 'diskSignaturesFile' must be a non-empty string.")
+
+assert(type(jobFile) == "string" and jobFile ~= "",
+    "The setting 'jobFile' must be a non-empty string.")
+
+assert(rawget(lama.side, dropSide),
+    "The setting 'dropSide' must be a valid lama.side.")
+assert(rawget(lama.side, fuelSide),
+    "The setting 'fuelSide' must be a valid lama.side.")
+assert(rawget(lama.side, torchSide) or not useTorches,
+    "The setting 'torchSide' must be a valid lama.side.")
+assert(rawget(lama.side, diskSide),
+    "The setting 'diskSide' must be a valid lama.side.")
+
+assert(dropSide ~= fuelSide and fuelSide ~= diskSide and
+       dropSide ~= diskSide and (not useTorches or (
+       dropSide ~= torchSide and fuelSide ~= torchSide and
+       diskSide ~= torchSide)),
+       "Duplicate side configuration detected. Make sure the side for each "..
+       "docking bay element (disk, drop, fuel and torch chest) is different.")
+
+assert(type(rsDiskSide) == "string" and rsDiskSide ~= "",
+    "'rsDiskSide' is invalid; did you mess with the code?")
+
+-------------------------------------------------------------------------------
 -- Initialization                                                            --
 -------------------------------------------------------------------------------
 
 -- Command line argument parsing.
 local args = {...}
 if args[1] == "reset" then
-    assert(disk.isPresent("back"),
+    assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
-    local diskPath = disk.getMountPath("back")
+    local diskPath = disk.getMountPath(rsDiskSide)
     local jobFile = fs.combine(diskPath, jobFile)
     fs.delete(jobFile)
     fs.delete(fs.combine(diskPath, "jam"))

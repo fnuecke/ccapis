@@ -54,7 +54,7 @@ local signatureLength = 64
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.1"
 
 --[[
     Wraps the camera peripheral on the specified side.
@@ -130,6 +130,18 @@ function calibrate(camera, name, samples, writeProgress)
     count = count + samples
     current = current / count
     return signature.set(name, current, count)
+end
+
+--[[
+    Returns the path at which the API saves its signatures.
+
+    This can be useful for automated backups or installers (for example JAM
+    uses this when it replicates itself onto the floppy disk).
+
+    @return the path to the file in which we store our signatures.
+]]
+function savePath()
+    return signaturesFile
 end
 
 -------------------------------------------------------------------------------

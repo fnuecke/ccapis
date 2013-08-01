@@ -135,7 +135,7 @@ local program = state.new(stateFile)
         print("Checking for chests...")
         lama.turn(dropSide)
         assert(turtle.detect(),
-            "Bad setup detected, no drop-off chest found.")
+            "Bad setup detected, no drop chest found.")
         lama.turn(fuelSide)
         assert(turtle.detect(),
             "Bad setup detected, no fuel chest found.")
@@ -200,7 +200,7 @@ end)
 end)
 
 --[[
-    Actually drop off anything in our inventory that's surplus.
+    Actually drop anything in our inventory that's surplus.
 ]]
 :add("drop", function()
     if not dontCountThat then
@@ -314,6 +314,7 @@ end)
     if nextJob <= jobData.totalJobs then
         job = nextJob
         jobData.nextJob = job + 1
+        placeTorches = placeTorches or jobData.placeTorches
         switchTo("refuel_job")
         log:info("Got one! Our new job ticket is #%d.", job)
     else
@@ -423,7 +424,7 @@ end)
     save()
 
     -- Computes the total number of samples we got of the block type in that
-    -- slot (including ones already dropped off and ignored).
+    -- slot (including ones already dropped and ignored).
     local function getCount(slot)
         local count = turtle.getItemCount(slot)
         return dropped and (count + (dropped[slot] or 0)) or count
@@ -486,7 +487,7 @@ end)
 end)
 
 --[[
-    Digs back up, picking up whatever isn't ignored. Returns home to drop off
+    Digs back up, picking up whatever isn't ignored. Returns home to drop
     stuff if inventory is full to resume where it we off.
 ]]
 :add("dig_up", function()
@@ -728,7 +729,8 @@ function private.setupDigSite()
     print(" > " .. jobFile)
     local file = fs.open(jobFile, "w")
     assert(file, "Could not open job file for writing.")
-    file.write(textutils.serialize({totalJobs = jobCount}))
+    file.write(textutils.serialize({totalJobs = jobCount,
+                                    placeTorches = placeTorches}))
     file.close()
 
     -- We write a startup file to the disk drive that will install our
@@ -890,9 +892,8 @@ function private.setupIgnoredBlocks()
                         print("Press [Enter] to try again m(.,.)m")
                         private.prompt({keys.enter}, {})
                         return -- restarts the state
-                    else
-                        break
                     end
+                    break
                 end
             end
             if free and turtle.getItemCount(slot) > 0 then
@@ -901,7 +902,9 @@ function private.setupIgnoredBlocks()
                 slot = free
                 free = nil
             end
-        elseif free == nil then
+        end
+        -- Might have become free while merging blocks.
+        if turtle.getItemCount(slot) == 0 and free == nil then
             free = slot
         end
         slot = slot + 1
@@ -1043,7 +1046,7 @@ end
     @param the message category, i.e. the type of the message.
     @param the actual message content.
 ]]
-function sendMessage(category, message)
+function private.sendMessage(category, message)
     if not private.modem then
         return
     end
@@ -1241,10 +1244,10 @@ function private.drop(slot, keep)
         lama.turn(dropSide)
         turtle.select(slot)
         if not turtle.drop(turtle.getItemCount(slot) - keep) then
-            private.sendMessage("full", "The drop-off chest is full!")
+            private.sendMessage("full", "The drop chest is full!")
             if not didLogFull then
                 didLogFull = true
-                log:warn("The drop-off chest is full! Waiting...")
+                log:warn("The drop chest is full! Waiting...")
             end
             os.sleep(5)
         end
@@ -1292,7 +1295,7 @@ function private.refuel(needed)
     end
 
     -- Make sure we leave our temporary slot empty. We may put some fuel into
-    -- the drop-off chest instead of back into the fuel chest by doing this (in
+    -- the drop chest instead of back into the fuel chest by doing this (in
     -- case we were rebooted while refueling), but that's better than
     -- accidentally putting something that's not fuel into our fuel chest.
     private.drop(tempSlot)
@@ -1382,29 +1385,28 @@ assert(type(rsDiskSide) == "string" and rsDiskSide ~= "",
 -- Command line argument parsing.
 local args = {...}
 if args[1] == "reset" then
-    assert(disk.isPresent(rsDiskSide),
-        "Bad setup detected, no disk in disk drive behind me!")
-    local diskPath = disk.getMountPath(rsDiskSide)
-
-    if #fs.list(diskPath) > 0 then
-        term.clear()
-        term.setCursorPos(1, 1)
-        print("This will format the disk in the      \n" ..
-              "attached disk drive. All data will be \n" ..
-              "irretrievably lost.                 \n\n" ..
-              "Are you sure? [Y/n]")
-        if private.prompt() then
-            print("Formatting disk...")
-            for _, file in pairs(fs.list(diskPath)) do
-                local path = fs.combine(diskPath, file)
-                print(" > " .. file .. (fs.isDir(path) and "/*" or ""))
-                fs.delete(path)
-                os.sleep(0.1)
+    if disk.isPresent(rsDiskSide) then
+        local diskPath = disk.getMountPath(rsDiskSide)
+        if #fs.list(diskPath) > 0 then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("This will format the disk in the      \n" ..
+                  "attached disk drive. All data will be \n" ..
+                  "irretrievably lost.                 \n\n" ..
+                  "Are you sure? [Y/n]")
+            if private.prompt() then
+                print("Formatting disk...")
+                for _, file in pairs(fs.list(diskPath)) do
+                    local path = fs.combine(diskPath, file)
+                    print(" > " .. file .. (fs.isDir(path) and "/*" or ""))
+                    fs.delete(path)
+                    os.sleep(0.1)
+                end
+            else
+                print("Aborting.")
+                os.sleep(0.1) -- Eat key event.
+                return false
             end
-        else
-            print("Aborting.")
-            os.sleep(0.1) -- Eat key event.
-            return false
         end
     end
 

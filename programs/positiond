@@ -16,7 +16,7 @@
       label = string } -- The label of the turtle.
 ]]
 
-assert(os.loadAPI("lama"))
+assert(os.loadAPI("apis/lama"))
 assert(os.loadAPI("apis/logger"))
 
 -------------------------------------------------------------------------------

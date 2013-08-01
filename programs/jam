@@ -29,7 +29,7 @@
 assert(os.loadAPI("apis/logger"))
 assert(os.loadAPI("apis/startup"))
 assert(os.loadAPI("apis/state"))
-assert(os.loadAPI("lama"))
+assert(os.loadAPI("apis/lama"))
 
 -------------------------------------------------------------------------------
 -- Config                                                                    --
@@ -1399,11 +1399,11 @@ if args[1] == "reset" then
             end
             program:reset()
             startup.disable("jam")
-            os.sleep(0.5)
+            return true
         else
             print("Aborting.")
             os.sleep(0.1) -- Eat key event.
-            return
+            return false
         end
     end
 end

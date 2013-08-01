@@ -36,9 +36,12 @@ assert(os.loadAPI("apis/lama"))
 -- Semi-config (you normally won't want to touch these)                      --
 -------------------------------------------------------------------------------
 
+-- The channel on which we'll send out status messages.
+local sendChannel = 10113
+
 -- Whether to write our progress into a log file (each time the program changes
 -- its state it would log that). This is primarily intended for debugging.
-local writeLog = true
+local writeLog = false
 
 -- File in which to store current program state on the turtle, for resuming the
 -- program after a reboot.
@@ -191,6 +194,10 @@ end)
 ]]
 :add("goto_drop", function()
     log:info("Going home to deliver the goods.")
+    private.sendMessage("state", "goto_drop")
+
+    -- Put any 'ignored' blocks we dig up while going home into the first four
+    -- slots, if possible.
     turtle.select(1)
     -- Player being invulnerable can block this, so we have to keep trying.
     repeat
@@ -207,6 +214,8 @@ end)
     if not dontCountThat then
         log:info("Dumping what I found!")
     end
+    private.sendMessage("state", "drop")
+
     -- Drop any surplus of the blocks we're supposed to ignore. We may have
     -- gotten some when digging down.
     dropped = dropped or {}
@@ -292,6 +301,9 @@ end)
 ]]
 :add("get_job", function()
     log:info("Looking for a new job.")
+    private.sendMessage("state", "get_job")
+
+    -- Make sure the disk drive is behind us.
     lama.turn((diskSide + 2) % 4)
 
     -- Wait a bit to finish moving and connect to the disk drive.
@@ -335,6 +347,7 @@ end)
 ]]
 :add("refuel_job", function()
     log:info("Getting enough fuel to make it to our job and back.")
+    private.sendMessage("state", "refuel_job")
     private.refuel(private.computeExpeditionCost(job))
     switchTo("restock_torches")
 end)
@@ -345,6 +358,7 @@ end)
 :add("restock_torches", function()
     if placeTorches then
         log:info("Picking up some torches to bring light into the dark.")
+        private.sendMessage("state", "restock_torches")
         private.restockTorches()
     end
     switchTo("goto_job")
@@ -356,6 +370,7 @@ end)
 :add("goto_job", function()
     local tx, tz = private.computeCoordinates(job)
     log:info("On my way to my workplace (%d, %d)!", tx, tz)
+    private.sendMessage("state", "goto_job")
     turtle.select(1)
     -- Player being invulnerable can block this, so we have to keep trying.
     repeat
@@ -374,6 +389,9 @@ end)
     returns to where we left off.
 ]]
 :add("dig_down", function()
+    private.sendMessage("state", "dig_down")
+
+    -- Put any ignored blocks into the first four slots.
     turtle.select(1)
     if resumeDigDown then
         log:info("Going back to where I left of digging.")
@@ -412,6 +430,7 @@ end)
     end
 
     log:info("Sorting blocks to ignore for improved lookup speed.")
+    private.sendMessage("state", "sort_ignore")
 
     -- If we were interrupted while swapping items, restore our continuous list
     -- of blocks to ignore, then start over.
@@ -493,6 +512,8 @@ end)
 ]]
 :add("dig_up", function()
     log:info("Digging back up, looking for valuables.")
+    private.sendMessage("state", "dig_up")
+
     if ignoreSignatures then
         -- We got a camera to help us identify useless blocks.
         assert("not yet implemented")
@@ -553,6 +574,8 @@ end)
 ]]
 :add("refuel_end", function()
     log:info("Getting my last rites. Fuel! I meant fuel.")
+    private.sendMessage("state", "refuel_end")
+
     -- Generate the path to our final resting place: two up, n forward and one
     -- to the side (so future finishing turtles can pass us by).
     local x, y, z = lama.get()
@@ -571,6 +594,8 @@ end)
 ]]
 :add("clear_inventory", function()
     log:info("Clearing out my inventory since I'm done with the world.")
+    private.sendMessage("state", "clear_inventory")
+
     for slot = 1, 16 do
         private.drop(slot)
     end
@@ -583,6 +608,8 @@ end)
 ]]
 :add("goto_end", function()
     log:info("Moving out of the way, I'm just useless junk anyway.")
+    private.sendMessage("state", "goto_end")
+
     -- Player being invulnerable can block this, so we have to keep trying.
     repeat
         local x, y, z = lama.get()
@@ -596,6 +623,8 @@ end)
 ]]
 :add("end", function()
     log:info("That's it, I'm going to end it right here. It was a nice life.")
+    private.sendMessage("state", "end")
+
     repeat until lama.moveto(1, 2, endSlot)
     startup.disable("jam")
     switchTo(nil)
@@ -1048,8 +1077,22 @@ end
     @param the actual message content.
 ]]
 function private.sendMessage(category, message)
-    if not private.modem then
+    if private.noModem then
         return
+    elseif not private.modem then
+        if peripheral.isPresent("right") and
+           peripheral.getType("right") == "modem"
+        then
+            private.modem = peripheral.wrap("right")
+        elseif peripheral.isPresent("left") and
+               peripheral.getType("left") == "modem"
+        then
+            private.modem = peripheral.wrap("left")
+        else
+            -- Don't try again.
+            private.noModem = true
+            return
+        end
     end
     local packet = {}
     packet.source = os.getComputerID()
@@ -1331,7 +1374,7 @@ function private.restockTorches()
             -- Put back any surplus.
             turtle.drop()
         else
-            private.sendMessage("toches", "We're all out of torches!")
+            private.sendMessage("torches", "We're all out of torches!")
             if not didLogNoTorches then
                 didLogNoTorches = true
                 log:warn("The torch chest is empty! Waiting...")

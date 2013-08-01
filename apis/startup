@@ -54,7 +54,7 @@ local private
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.1"
 
 --[[
     Adds a new startup script with the specified priority by copying the
@@ -135,12 +135,7 @@ function remove(name)
     if not exists(name) then
         return false
     end
-    local _, priority, enabled = private.find(name)
-    local path = fs.combine(startupPath, priority .. "_" .. name)
-    if not enabled then
-        path = path .. "." .. disabledPostfix
-    end
-    fs.delete(path)
+    fs.delete(scriptPath(name))
     return true
 end
 
@@ -198,9 +193,8 @@ end
     @return true if the script is enabled; false otherwise.
 ]]
 function isEnabled(name)
-    if not exists(name) then
-        return false
-    end
+    assert(type(name) == "string" and name ~= "",
+        "'name' must be a non-empty string")
     local success, _, enabled = private.find(name)
     return success and enabled
 end
@@ -271,9 +265,33 @@ function iter()
 end
 
 --[[
+    Returns the path to the startup script with the specified alias.
+
+    This can be useful for backups and automatic installer scripts (for
+    example, JAM uses this for replicating a system environment onto a floppy
+    disk and back again).
+
+    @param name the name of the script to get the path to.
+    @return the path to the script file.
+]]
+function scriptPath(name)
+    assert(exists(name), "no such script")
+    local _, priority, enabled = private.find(name)
+    local path = fs.combine(startupPath, priority .. "_" .. name)
+    if not enabled then
+        path = path .. "." .. disabledPostfix
+    end
+    return path
+end
+
+--[[
     Runs all startup scripts in the startup scripts folder in alphabetic order.
 
     Note that this will print status and error messages to the screen.
+
+    @return true if all scripts ran successfully; false otherwise (this
+        includes the case where remaining scripts ran either because we're
+        configured to continue regardless, or because the user said it's OK).
 ]]
 function run()
     -- Get list of startup scripts.
@@ -281,6 +299,7 @@ function run()
     -- Make sure the list is sorted.
     table.sort(list)
     -- Run all startup scripts.
+    local success = true
     for _, name in ipairs(list) do
         local path = fs.combine(startupPath, name)
         if private.shouldRun(path) then
@@ -297,6 +316,7 @@ function run()
             -- give the user chance to decide whether to go on or not, or
             -- decide for ourselves what to do.
             if not result then
+                success = false
                 printError(message)
                 if errorTimeout < 0 then
                     print("Skipping remaining scripts.")
@@ -310,6 +330,7 @@ function run()
             end
         end
     end
+    return success
 end
 
 -------------------------------------------------------------------------------
@@ -346,7 +367,7 @@ function private.find(name)
     -- Check all files. Make sure the list is sorted, just in case someone got
     -- the crazy idea to put in two scripts with the same "name", so that we
     -- have deterministic behavior.
-    local list = fs.list(startupPath)
+    local list = fs.exists(startupPath) and fs.list(startupPath) or {}
     table.sort(list)
     for _, fileName in ipairs(list) do
         local path = fs.combine(startupPath, fileName)

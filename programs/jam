@@ -36,15 +36,15 @@ assert(os.loadAPI("lama"))
 -------------------------------------------------------------------------------
 
 -- Whether to place torches in the holes we dig (when moving up).
-local useTorches = true
+local placeTorches = true
+
+-------------------------------------------------------------------------------
+-- Semi-config (you normally won't want to touch these)                      --
+-------------------------------------------------------------------------------
 
 -- Whether to write our progress into a log file (each time the program changes
--- its state it would log that).
+-- its state it would log that). This is primarily intended for debugging.
 local writeLog = true
-
--------------------------------------------------------------------------------
--- Semi-config (you normally don't want to touch these)                      --
--------------------------------------------------------------------------------
 
 -- File in which to store current program state on the turtle, for resuming the
 -- program after a reboot.
@@ -79,9 +79,6 @@ local diskSide = lama.side.back
 -- Internal variables / constants                                            --
 -------------------------------------------------------------------------------
 
--- Forward declaration of namespaces.
-local private
-
 -- Do not change the next two variables, lest they interfere with the interval
 -- of blocks to ignore! They is just here to make the code more readable (no
 -- magic numbers all over the place.)
@@ -105,7 +102,11 @@ local signaturesFile = (camera and camera.savePath and camera.savePath()) or
                        "/.camera-signatures"
 
 -- The log we use. Use dummy logger if we're not supposed to log stuff.
-local log = writeLog and logger.new("jam") or {info=function() end}
+local log = writeLog and logger.new("jam") or
+            {info = function() end, warn = function() end}
+
+-- Forward declaration of namespaces.
+local private
 
 -------------------------------------------------------------------------------
 -- Program states                                                            --
@@ -121,22 +122,55 @@ local program = state.new(stateFile)
     some blocks in the turtle's inventory.
 ]]
 :add("setup", function()
-    -- Make sure there's a disk drive.
+    -- Make sure there's a disk drive behind us.
     assert(disk.isPresent(rsDiskSide),
-        "Bad setup detected, no disk in disk drive behind me!")
+        "Bad setup detected, no disk in disk drive found.")
     local diskPath = disk.getMountPath(rsDiskSide)
+
+    -- Configure the turtle to use our local coordinate system.
+    lama.set(0, 0, 0, lama.side.north)
 
     -- If there's no job file on the disk drive we're starting from scratch.
     local jobFile = fs.combine(diskPath, jobFile)
     if not fs.exists(jobFile) then
-        return private.setupDigSite()
-    elseif fs.isDir(jobFile) then
-        error("Job file path invalid because a folder with that name exists.")
+        placeTorches = private.setupDigSite()
+        if placeTorches == nil then
+            return -- nil is the abort signal, restart the state.
+        end
+
+        -- Check for chests.
+        print("Checking for chests...")
+        lama.turn(dropSide)
+        assert(turtle.detect(),
+            "Bad setup detected, no drop-off chest found.")
+        lama.turn(fuelSide)
+        assert(turtle.detect(),
+            "Bad setup detected, no fuel chest found.")
+        if placeTorches then
+            lama.turn(torchSide)
+            assert(turtle.detect(),
+                "Bad setup detected, no torch chest found.")
+        end
     end
 
+    assert(not fs.isDir(jobFile), "Bad disk, folder at job file location.")
+
+    lama.turn((diskSide + 2) % 4)
+    switchTo("add_turtle")
+
+    -- Finish initialization via disk startup. For example, this will install
+    -- this program as an autorun script.
+    os.reboot()
+end)
+
+--[[
+    Given an existing dig site adds a new turtle to work on it.
+]]
+:add("add_turtle", function()
     -- Based on the context, ask for the blocks to ignore. If we're a camera
     -- turtle and there are signatures ask for the one to ignore, otherwise ask
     -- the user to place some blocks in our inventory.
+    local diskPath = disk.getMountPath(rsDiskSide)
     local diskSignaturesFile = fs.combine(diskPath, diskSignaturesFile)
     if camera and camera.wrap() and
        fs.exists(diskSignaturesFile) and
@@ -149,9 +183,6 @@ local program = state.new(stateFile)
         -- Remember how many block types we're supposed to ignore.
         ignoreCount = private.setupIgnoredBlocks()
     end
-
-    -- Configure the turtle to use our local coordinate system.
-    lama.set(0, 0, 0, lama.side.north)
 
     -- Drop any duplicates we have of the stuff we're supposed to ignore.
     dontCountThat = true
@@ -209,7 +240,7 @@ end)
     Refills our torch stack.
 ]]
 :add("restock_torches", function()
-    if useTorches then
+    if placeTorches then
         log:info("Picking up some torches to bring light into the dark.")
         private.restockTorches()
     end
@@ -580,71 +611,104 @@ private = {}
     This function never returns, it reboots the turtle after it has run.
 ]]
 function private.setupDigSite()
-    disk.setLabel(rsDiskSide, "JAM Job State")
+    -- Label the disk if it hasn't been labeled yet.
+    if not disk.getLabel(rsDiskSide) or disk.getLabel(rsDiskSide) == "" then
+        disk.setLabel(rsDiskSide, "JAM Job State")
+    end
     local diskPath = disk.getMountPath(rsDiskSide)
 
     -- Ask the user how big of a dig site he'd like to create.
     term.clear()
     term.setCursorPos(1, 1)
-    print("Welcome to JAM: Just another Miner! \n\n" ..
+    print("  Welcome to JAM: Just another Miner!\n\n" ..
           "Please tell me how large an area you  \n" ..
           "want to mine. The area will always be \n" ..
-          "squared, I need the side length of    \n" ..
-          "that square.                          \n")
-    write("> ")
-    local size
+          "squared. Use the arrow keys to adjust \n" ..
+          "the size, then press [Enter].         \n")
+    local _, y = term.getCursorPos()
+    local format = {"  Size: %d (%d chunk, %d hole)\n",
+                    "  Size: %d (%d chunks, %d holes)\n"}
+    print("\n")
+    write("[left/right: one, up/down: five steps]\n\n" ..
+          "(Note: chunks refers to the number of \n" ..
+          "affected ones, not the worked on area)")
+    local size, radius, chunks, jobCount = 1
     repeat
-        size = tonumber(read())
-        if not size then
-            local x, y = term.getCursorPos()
-            term.setCursorPos(1, y - 1)
-            term.clearLine()
-            write("Not a number, try again: ")
-        elseif size < 1 then
-            local x, y = term.getCursorPos()
-            term.setCursorPos(1, y - 1)
-            term.clearLine()
-            write("Please enter number > 0: ")
-        end
-    until size and size > 0
-    if size > 256 then
-        print("That's a rather large area. Are you   \n" ..
-              "really sure you want to do this? :?   \n")
-        print("[Y/n] ")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-            if code == keys.n then
-                return -- restarts the state
-            end
-        until code == keys.y or code == keys.enter
-        term.setCursorBlink(false)
-    end
+        local rx, ry = term.getCursorPos()
+        radius = size * 3
+        chunks = math.ceil(radius / 8)
+        chunks = chunks * chunks
+        jobCount = private.computeJobCount(radius)
+        term.setCursorPos(1, y)
+        term.clearLine()
+        write(string.format(size == 1 and format[1] or format[2],
+                            radius, chunks, jobCount))
+        term.setCursorPos(rx, ry) -- For termination not f*cking up the shell.
 
-    -- Compute the number of job such a dig site would provide.
-    local totalJobs = private.computeJobCount(size)
+        local _, code = os.pullEvent("key")
+        if code == keys.right then
+            -- Let's bound the maximum dig site size to the area of loaded
+            -- chunks around a single player...
+            size = math.min(55, size + 2)
+        elseif code == keys.left then
+            size = math.max(1, size - 2)
+        elseif code == keys.up then
+            size = math.min(55, size + 10)
+        elseif code == keys.down then
+            size = math.max(1, size - 10)
+        end
+    until code == keys.enter
+
+    term.clear()
+    term.setCursorPos(1, 1)
+    write("Do you want torches to be placed in \n" ..
+          "the dug holes? If so, turtles will  \n" ..
+          "carry a stack of torches with them  \n" ..
+          "and place them in the holes they dug\n" ..
+          "while on their way back up.       \n\n" ..
+          "Place torches? [Y/n] > ")
+    local placeTorches = private.prompt()
+
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Please confirm your settings\n\n" ..
+          "  Radius: " .. radius .. "\n" ..
+          "    Affected chunks: " .. chunks .. "\n" ..
+          "    Holes/Jobs: " .. jobCount     .. "\n" ..
+          "  Place torches: " .. tostring(placeTorches) .. "\n")
+    write("Is this correct? [Y/n] > ")
+    if not private.prompt() then
+        return nil -- nil causes restart
+    end
 
     -- Set up the disk so that it installs the script to any
     -- turtle that starts up while in front of it.
     term.clear()
     term.setCursorPos(1, 1)
-    print("Setting area of operations to fit into " ..
-          "the specified bounds of " .. size .. ". " ..
-          "This will generate a total of " .. totalJobs .. " jobs.\n")
-
     print("Writing initialization data to disk...")
 
     local install = {
-        {shell.getRunningProgram(), fs.combine(diskPath, "jam")},
-        {"apis/bapil", fs.combine(diskPath, "apis/bapil")},
-        {"apis/logger", fs.combine(diskPath, "apis/logger")},
-        {"apis/stacktrace", fs.combine(diskPath, "apis/stacktrace")},
-        {"apis/startup", fs.combine(diskPath, "apis/startup")},
-        {"apis/state", fs.combine(diskPath, "apis/state")},
-        {"lama", fs.combine(diskPath, "lama")},
-        {signaturesFile, fs.combine(diskPath, diskSignaturesFile), true}
+        {bapil.resolveAPI("bapil"),
+            fs.combine(diskPath, "apis/bapil")},
+        {bapil.resolveAPI("camera"),
+            fs.combine(diskPath, "apis/camera"), true},
+        {bapil.resolveAPI("lama"),
+            fs.combine(diskPath, "apis/lama")},
+        {bapil.resolveAPI("logger"),
+            fs.combine(diskPath, "apis/logger")},
+        {bapil.resolveAPI("stacktrace"),
+            fs.combine(diskPath, "apis/stacktrace")},
+        {bapil.resolveAPI("startup"),
+            fs.combine(diskPath, "apis/startup")},
+        {bapil.resolveAPI("state"),
+            fs.combine(diskPath, "apis/state")},
+        {shell.getRunningProgram(),
+            fs.combine(diskPath, "programs/jam")},
+        {signaturesFile,
+            fs.combine(diskPath, diskSignaturesFile), true}
     }
     fs.makeDir(fs.combine(diskPath, "apis"))
+    fs.makeDir(fs.combine(diskPath, "programs"))
     for _, file in ipairs(install) do
         if fs.exists(file[1]) and not fs.isDir(file[1]) then
             -- Update / install.
@@ -656,13 +720,14 @@ function private.setupDigSite()
         elseif not file[3] then
             error("missing file " .. file[1])
         end
+        os.sleep(0.1)
     end
 
     local jobFile = fs.combine(diskPath, jobFile)
     print(" > " .. jobFile)
     local file = fs.open(jobFile, "w")
     assert(file, "Could not open job file for writing.")
-    file.write(textutils.serialize({totalJobs = totalJobs}))
+    file.write(textutils.serialize({totalJobs = jobCount}))
     file.close()
 
     -- We write a startup file to the disk drive that will install our
@@ -676,10 +741,10 @@ if not turtle then
     return shell.run("/startup")
 end
 
--- Ignore if we're on the wrong side.
+-- Ignore if we're on the wrong side. Otherwise get the mount path of the disk.
 local diskSide = %q
 if not disk.isPresent(diskSide) then
-    return
+    return false
 end
 local diskPath = disk.getMountPath(diskSide)
 
@@ -688,30 +753,38 @@ if os.getComputerLabel() == nil or os.getComputerLabel() == "" then
     os.setComputerLabel("JAM-" .. os.getComputerID())
 end
 
--- Install APIs if they're not there yet.
+-- Install APIs if they're not there yet. Update them if the file size differs.
 local install = {
-    {"apis/bapil", fs.combine(diskPath, "apis/bapil")},
-    {"apis/logger", fs.combine(diskPath, "apis/logger")},
+    {"apis/bapil",      fs.combine(diskPath, "apis/bapil")},
+    {"apis/camera",     fs.combine(diskPath, "apis/camera"), true},
+    {"apis/lama",       fs.combine(diskPath, "apis/lama")},
+    {"apis/logger",     fs.combine(diskPath, "apis/logger")},
     {"apis/stacktrace", fs.combine(diskPath, "apis/stacktrace")},
-    {"apis/startup", fs.combine(diskPath, "apis/startup")},
-    {"apis/state", fs.combine(diskPath, "apis/state")},
-    {"lama", fs.combine(diskPath, "lama")}
+    {"apis/startup",    fs.combine(diskPath, "apis/startup")},
+    {"apis/state",      fs.combine(diskPath, "apis/state")}
 }
 fs.makeDir("apis")
 for _, file in ipairs(install) do
-    if not fs.exists(file[1]) then
+    assert(fs.exists(file[2]) or file[3],
+        "Bad disk, missing file: " .. file[2])
+    if not fs.exists(file[1]) or not fs.isDir(file[1]) and
+       fs.getSize(file[2]) ~= fs.getSize(file[1])
+    then
+        if fs.exists(file[1]) then
+            fs.delete(file[1])
+        end
         fs.copy(file[2], file[1])
     elseif fs.isDir(file[1]) then
         error("Bad installation, " .. file[1] .. " is a folder.")
     end
 end
 
--- Install startup file if there isn't one, yet. Otherwise just run it.
+-- Install startup file if there isn't one, yet.
 if not fs.exists("/startup") then
     local file = fs.open("/startup", "w")
     file.write([[-- Skip if we already ran.
 if startup then
-    return
+    return false
 end
 
 -- Install custom API loader.
@@ -724,48 +797,55 @@ _G.pcall = stacktrace.tpcall
 
 -- Load startup API and perform startup.
 assert(os.loadAPI("apis/startup"))
-startup.run()]])
+return startup.run()]])
     file.close()
+end
 
-     -- Don't reboot immediately in startup. Weird stuff happens otherwise.
-    os.sleep(0.1)
-    os.reboot()
-else
-    shell.run("/startup")
+-- Run local startup script.
+if not dofile("/startup") then
+    return false
 end
 
 assert(startup, "Bad installation, startup API not loaded automatically.")
 
--- Copy signatures to the turtle if it's a camera turtle.
+-- Copy signatures to the turtle if it's a camera turtle. We overwrite
+-- signatures already on the turtle to make sure we have the ones we are
+-- supposed to ignore.
 if camera and camera.wrap() then
     local signaturesFile = %q
-    -- Don't overwrite signatures already on the turtle.
-    if not fs.exists(signaturesFile) then
-        local diskSignaturesFile = fs.combine(diskPath, %q)
-        if fs.exists(diskSignaturesFile) and
-           not fs.isDir(diskSignaturesFile)
+    local diskSignaturesFile = fs.combine(diskPath, %q)
+    if fs.exists(diskSignaturesFile) then
+        assert(not fs.exists(signaturesFile) or not fs.isDir(signaturesFile),
+            "Bad installation, folder at location of signature file.")
+        assert(not fs.isDir(diskSignaturesFile),
+            "Bad disk, signature file is a folder.")
+        if not fs.exists(signaturesFile) or
+           fs.getSize(diskSignaturesFile) ~= fs.getSize(signaturesFile)
         then
+            if fs.exists(signaturesFile) then
+                fs.delete(signaturesFile)
+            end
             fs.copy(diskSignaturesFile, signaturesFile)
         end
     end
 end
 
--- Overwrite this program in case of updates.
-if not startup.isEnabled("jam") or fs.getSize() then
+-- Overwrite this program in case of updates (different file size).
+local jamFile = fs.combine(diskPath, "programs/jam")
+if not startup.isEnabled("jam") or
+   fs.getSize(startup.scriptPath("jam")) ~= fs.getSize(jamFile)
+then
     startup.remove("jam")
-    local jamFile = fs.combine(diskPath, "jam")
     startup.addFile("jam", 20, jamFile)
     startup.enable("jam")
-    os.sleep(0.1)
+    print("Done installing JAM, rebooting...")
+    os.sleep(1)
     os.reboot()
 end]=], rsDiskSide, signaturesFile, diskSignaturesFile))
     file.close()
 
-    -- Allow the user to read what we did there...
-    os.sleep(2)
-
     -- Reboot to initialize ourself from the disk.
-    os.reboot()
+    return placeTorches
 end
 
 --[[
@@ -785,11 +865,7 @@ function private.setupIgnoredBlocks()
           "Oh, and you can place the blocks      \n" ..
           "anywhere you want, I'll put them into \n" ..
           "the right slots myself \\o/           \n")
-    term.setCursorBlink(true)
-    repeat
-        local _, code = os.pullEvent("key")
-    until code == keys.enter
-    term.setCursorBlink(false)
+    private.prompt({keys.enter}, {})
     print("OK, let me see...")
 
     -- Move stuff from anywhere in the inventory into the first slots, so that
@@ -811,11 +887,7 @@ function private.setupIgnoredBlocks()
                               "Please try only giving one block per   \n" ..
                               "block type, m'kay?                     \n")
                         print("Press [Enter] to try again m(.,.)m")
-                        term.setCursorBlink(true)
-                        repeat
-                            local _, code = os.pullEvent("key")
-                        until code == keys.enter
-                        term.setCursorBlink(false)
+                        private.prompt({keys.enter}, {})
                         return -- restarts the state
                     else
                         break
@@ -850,14 +922,9 @@ function private.setupIgnoredBlocks()
               "mean a lot of additional running back \n" ..
               "and forth, which is less efficient /o\\\n\n")
         write("Are you sure? [y/N] > ")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-            if code == keys.n or code == keys.enter then
-                return -- restarts the state
-            end
-        until code == keys.y
-        term.setCursorBlink(false)
+        if not private.prompt({keys.y}, {keys.n, keys.enter}) then
+            return -- restarts the state
+        end
         print("Oh boy... well, here goes nothing!")
     elseif occupied == 16 then
         print("You can't be serious, right? There's \n" ..
@@ -865,13 +932,9 @@ function private.setupIgnoredBlocks()
               "I need at least one free slot into   \n" ..
               "which I can put the stuff I dig up.  \n")
         print("Press [Enter] to try again -.-")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-        until code == keys.enter
-        term.setCursorBlink(false)
+        private.prompt({keys.enter}, {})
         return -- restarts the state
-    elseif occupied == 15 and useTorches then
+    elseif occupied == 15 and placeTorches then
         print("Nice try, but this can't work in my  \n" ..
               "current configuration, since I need  \n" ..
               "one additional slot for the torches  \n" ..
@@ -880,11 +943,7 @@ function private.setupIgnoredBlocks()
               "in. Meaning at least two free slots  \n" ..
               "in total. Can you do that for me?    \n")
         print("Press [Enter] to try again :/")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-        until code == keys.enter
-        term.setCursorBlink(false)
+        private.prompt({keys.enter}, {})
         return -- restarts the state
     elseif occupied >= tempSlot or occupied >= torchSlot then
         print("Unless you messed with the code this \n" ..
@@ -896,11 +955,7 @@ function private.setupIgnoredBlocks()
               math.min(tempSlot, torchSlot) ..
               " block   \n" ..
               "types. Press [Enter] to try again... \n")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-        until code == keys.enter
-        term.setCursorBlink(false)
+        private.prompt({keys.enter}, {})
         return -- restarts the state
     elseif occupied > 6 then
         print("While this is technically a feasible \n" ..
@@ -912,14 +967,9 @@ function private.setupIgnoredBlocks()
               "to check if I may dig up a block ^.- \n\n" ..
               "Is this really what you want?          ")
         write("[Y/n] > ")
-        term.setCursorBlink(true)
-        repeat
-            local _, code = os.pullEvent("key")
-            if code == keys.n then
-                return -- restarts the state
-            end
-        until code == keys.y or code == keys.enter
-        term.setCursorBlink(false)
+        if not private.prompt() then
+            return -- restarts the state
+        end
         print("Well, if you say so... ley's do this!")
     else
         local agree = {
@@ -946,6 +996,62 @@ end
 ]]
 function private.setupIgnoredSignatures()
     assert(false, "not yet implemented")
+end
+
+--[[
+    Reads a single key input from the user and returns whether the prompt was
+    confirmed or denied.
+
+    @param yesKeys a single or multiple keys that indicate success.
+    @param noKeys a single or multiple keys that indicate denial.
+    @return whether the user accepted or denied the prompt.
+]]
+function private.prompt(yesKeys, noKeys)
+    yesKeys = yesKeys or {keys.y, keys.enter}
+    noKeys = noKeys or {keys.n}
+    if not type(yesKeys) == "table" then
+        yesKeys = {yesKeys}
+    end
+    if not type(noKeys) == "table" then
+        noKeys = {noKeys}
+    end
+    local result
+    term.setCursorBlink(true)
+    repeat
+        local _, code = os.pullEvent("key")
+        for _, k in pairs(yesKeys) do
+            if code == k then
+                result = true
+                break
+            end
+        end
+        for _, k in pairs(noKeys) do
+            if code == k then
+                result = false
+                break
+            end
+        end
+    until result ~= nil
+    term.setCursorBlink(false)
+    return result
+end
+
+--[[
+    Sends a message via WIFI if available.
+
+    @param the message category, i.e. the type of the message.
+    @param the actual message content.
+]]
+function sendMessage(category, message)
+    if not private.modem then
+        return
+    end
+    local packet = {}
+    packet.source = os.getComputerID()
+    packet.sourceLabel = os.getComputerLabel()
+    packet.category = category
+    packet.message = message
+    private.modem.transmit(sendChannel, 0, textutils.serialize(packet))
 end
 
 --[[
@@ -1129,16 +1235,15 @@ end
 ]]
 function private.drop(slot, keep)
     keep = keep or 0
+    local didLogFull = false -- Don't spam the log.
     while turtle.getItemCount(slot) > keep do
         lama.turn(dropSide)
         turtle.select(slot)
         if not turtle.drop(turtle.getItemCount(slot) - keep) then
-            if private.modem then
-                private.modem.transmit(sendChannel, 0, textutils.serialize(
-                    {
-                        code = "full",
-                        message = "The drop-off chest is full!"
-                    }))
+            private.sendMessage("full", "The drop-off chest is full!")
+            if not didLogFull then
+                didLogFull = true
+                log:warn("The drop-off chest is full! Waiting...")
             end
             os.sleep(5)
         end
@@ -1150,17 +1255,16 @@ end
     it succeeds.
 ]]
 function private.refuel(needed)
+    local didLogNoFuel = false -- Don't spam the log.
     while turtle.getFuelLevel() < needed do
         turtle.select(tempSlot)
         if turtle.getItemCount(tempSlot) == 0 then
             lama.turn(fuelSide)
             if not turtle.suck() then
-                if private.modem then
-                    private.modem.transmit(sendChannel, 0, textutils.serialize(
-                        {
-                            code = "fuel",
-                            message = "We're all out of fuel!"
-                        }))
+                private.sendMessage("fuel", "We're all out fuel!")
+                if not didLogNoFuel then
+                    didLogNoFuel = true
+                    log:warn("The fuel chest is empty! Waiting...")
                 end
                 os.sleep(5)
             end
@@ -1198,6 +1302,7 @@ end
     succeeds.
 ]]
 function private.restockTorches()
+    local didLogNoTorches = false -- Don't spam the log.
     while turtle.getItemSpace(torchSlot) > 0 do
         -- Select an empty slot because we cannot control how much we pull,
         -- then replenish our actual torch stack from that and drop the rest.
@@ -1221,12 +1326,10 @@ function private.restockTorches()
             -- Put back any surplus.
             turtle.drop()
         else
-            if private.modem then
-                private.modem.transmit(sendChannel, 0, textutils.serialize(
-                    {
-                        code = "toches",
-                        message = "We're all out of torches!"
-                    }))
+            private.sendMessage("toches", "We're all out of torches!")
+            if not didLogNoTorches then
+                didLogNoTorches = true
+                log:warn("The torch chest is empty! Waiting...")
             end
             os.sleep(5)
         end
@@ -1254,13 +1357,13 @@ assert(rawget(lama.side, dropSide),
     "The setting 'dropSide' must be a valid lama.side.")
 assert(rawget(lama.side, fuelSide),
     "The setting 'fuelSide' must be a valid lama.side.")
-assert(rawget(lama.side, torchSide) or not useTorches,
+assert(rawget(lama.side, torchSide) or not placeTorches,
     "The setting 'torchSide' must be a valid lama.side.")
 assert(rawget(lama.side, diskSide),
     "The setting 'diskSide' must be a valid lama.side.")
 
 assert(dropSide ~= fuelSide and fuelSide ~= diskSide and
-       dropSide ~= diskSide and (not useTorches or (
+       dropSide ~= diskSide and (not placeTorches or (
        dropSide ~= torchSide and fuelSide ~= torchSide and
        diskSide ~= torchSide)),
        "Duplicate side configuration detected. Make sure the side for each "..
@@ -1279,11 +1382,30 @@ if args[1] == "reset" then
     assert(disk.isPresent(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
     local diskPath = disk.getMountPath(rsDiskSide)
-    local jobFile = fs.combine(diskPath, jobFile)
-    fs.delete(jobFile)
-    fs.delete(fs.combine(diskPath, "jam"))
-    fs.delete(fs.combine(diskPath, "startup"))
-    program:reset()
+    if #fs.list(diskPath) > 0 then
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("This will format the disk in the      \n" ..
+              "attached disk drive. All data will be \n" ..
+              "irretrievably lost.                 \n\n" ..
+              "Are you sure? [Y/n]")
+        if private.prompt() then
+            print("Formatting disk...")
+            for _, file in pairs(fs.list(diskPath)) do
+                local path = fs.combine(diskPath, file)
+                print(" > " .. file .. (fs.isDir(path) and "/*" or ""))
+                fs.delete(path)
+                os.sleep(0.1)
+            end
+            program:reset()
+            startup.disable("jam")
+            os.sleep(0.5)
+        else
+            print("Aborting.")
+            os.sleep(0.1) -- Eat key event.
+            return
+        end
+    end
 end
 
 -- Run our program.

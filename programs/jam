@@ -748,7 +748,7 @@ end
 -- Ignore if we're on the wrong side. Otherwise get the mount path of the disk.
 local diskSide = %q
 if not disk.isPresent(diskSide) then
-    return false
+    return shell.run("/startup")
 end
 local diskPath = disk.getMountPath(diskSide)
 

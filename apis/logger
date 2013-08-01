@@ -20,7 +20,7 @@ local logFolder = "/logs/"
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.1"
 
 --[[
     Creates a new logger that will log to the log file with the specified name.
@@ -62,6 +62,12 @@ function new(name, rotate)
         -- Return a nicely formatted string.
         return string.format("%04d-%02d-%02d", year, month, days)
     end
+    -- Formats time in a 24 hour style, with the hour being guaranteed to be
+    -- two digits (prefixed zero) unlike textutils.formatTime().
+    local function formatTime(time)
+        return string.format("%02d:%02d", math.floor(time),
+                             math.floor(60 * (time - math.floor(time))))
+    end
     return setmetatable({}, {__index = {
         log = function(self, level, format, ...)
             assert(type(self) == "table", "bad call (use colons)")
@@ -81,7 +87,7 @@ function new(name, rotate)
             -- message level and finally the message itself.
             local messageFormat = string.format("%s %s [%s] %%s",
                                        formatDays(os.day()),
-                                       textutils.formatTime(os.time(), true),
+                                       formatTime(os.time()),
                                        level)
             local message
             if format then

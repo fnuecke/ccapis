@@ -75,7 +75,7 @@ local class, private = {}
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.1"
 
 --[[
     Creates a new state machine which will save its state to file a the
@@ -169,7 +169,7 @@ end
 ]]
 function class:run()
     local metatable = private.validate(self)
-    metatable.current = metatable.entry
+    metatable.current = metatable.current or metatable.entry
     while metatable.current do
         local callback = metatable.list[metatable.current]
         -- In the following we adjust the functions environment by wrapping it
@@ -188,6 +188,15 @@ function class:run()
         -- envionments via metatables).
         setfenv(callback, oldfenv)
     end
+    metatable.deleteState()
+end
+
+--[[
+    Resets this state if (e.g. if it was terminated and would resume when run).
+]]
+function class:reset()
+    local metatable = private.validate(self)
+    metatable.current = nil
     metatable.deleteState()
 end
 

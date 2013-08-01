@@ -55,7 +55,7 @@ end
 local state, private
 
 -- Get our logger.
-local log = logger.new("daemon", true)
+local log = logger.new("daemon")
 
 -------------------------------------------------------------------------------
 -- Public API                                                                --

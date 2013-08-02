@@ -194,7 +194,7 @@ end)
         ignoreSignatures = private.setupIgnoredSignatures()
     else
         -- Remember how many block types we're supposed to ignore.
-        ignoreCount = private.setupIgnoredBlocks()
+        ignoreCount = private.setupIgnoredBlocks(placeTorches)
     end
 
     -- Drop any duplicates we have of the stuff we're supposed to ignore. Do
@@ -272,7 +272,7 @@ end)
     -- Drop all the items we actually found.
     droppingSurplus = droppingSurplus or {}
     for slot = ignoreCount + 1, 16 do
-        if slot ~= torchSlot then
+        if not placeTorches or slot ~= torchSlot then
             -- It may be that we found so many blocks that we're actually
             -- supposed to ignore while digging down, that they spilled into
             -- another slot. Check this here.
@@ -907,9 +907,10 @@ end
     This function asks the user to put blocks that should be ignored into the
     turtle's inventory and does some sanity checks on the found blocks.
 
+    @param placeTorches whether we're to place torches or not.
     @return the number of block types to ignore.
 ]]
-function private.setupIgnoredBlocks()
+function private.setupIgnoredBlocks(placeTorches)
     -- If we come here a dig site has already been set up, so we just need to
     -- know which block types to ignore.
     term.clear()
@@ -1001,7 +1002,9 @@ function private.setupIgnoredBlocks()
         print("Press [Enter] to try again :/")
         private.prompt({keys.enter}, {})
         return -- restarts the state
-    elseif occupied >= tempSlot or occupied >= torchSlot then
+    elseif occupied >= tempSlot or
+           (placeTorches and occupied >= torchSlot)
+    then
         print("Unless you messed with the code this \n" ..
               "should not happen: the inventory     \n" ..
               "range used for blocks to ignore      \n" ..

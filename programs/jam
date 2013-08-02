@@ -169,10 +169,11 @@ local program = state.new(stateFile)
         if haveIgnoreChest then
             term.clear()
             term.setCursorPos(1, 1)
-            print("Please put as many of each block type \n" ..
-                  "that you want to avoid into the torch \n" ..
-                  "chest as you wish to employ turtles.  \n" ..
-                  "(For example: one stack each)       \n\n" ..
+            print("Please put the block types that you   \n" ..
+                  "want to avoid into the torch chest or \n" ..
+                  "my inventory. Insert as many each, as \n" ..
+                  "you wish to employ turtles (normally  \n" ..
+                  "one stack each should be plenty).   \n\n" ..
                   "When done, press [Enter] to confirm.\n\n" ..
                   "Recommended: Stone, Dirt and possibly \n" ..
                   "Gravel or Sand (depends on the biome).\n" ..
@@ -915,7 +916,7 @@ function private.setupDigSite()
     local placeIgnored = upOption == 0
     local placeTorches = upOption == 1
 
-    local haveIgnoreChest
+    local haveIgnoreChest = false
     if not placeTorches then
         term.clear()
         term.setCursorPos(1, 1)

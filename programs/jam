@@ -195,6 +195,9 @@ end)
     else
         -- Remember how many block types we're supposed to ignore.
         ignoreCount = private.setupIgnoredBlocks(placeTorches)
+        if not ignoreCount then
+            return
+        end
     end
 
     -- Drop any duplicates we have of the stuff we're supposed to ignore. Do
@@ -742,19 +745,19 @@ function private.setupDigSite()
     print("Writing initialization data to disk...")
 
     local install = {
-        {bapil.resolveAPI("bapil"),
+        {bapil.resolveAPI("apis/bapil"),
             fs.combine(diskPath, "apis/bapil")},
-        {bapil.resolveAPI("camera"),
+        {bapil.resolveAPI("apis/camera"),
             fs.combine(diskPath, "apis/camera"), true},
-        {bapil.resolveAPI("lama"),
+        {bapil.resolveAPI("apis/lama"),
             fs.combine(diskPath, "apis/lama")},
-        {bapil.resolveAPI("logger"),
+        {bapil.resolveAPI("apis/logger"),
             fs.combine(diskPath, "apis/logger")},
-        {bapil.resolveAPI("stacktrace"),
+        {bapil.resolveAPI("apis/stacktrace"),
             fs.combine(diskPath, "apis/stacktrace")},
-        {bapil.resolveAPI("startup"),
+        {bapil.resolveAPI("apis/startup"),
             fs.combine(diskPath, "apis/startup")},
-        {bapil.resolveAPI("state"),
+        {bapil.resolveAPI("apis/state"),
             fs.combine(diskPath, "apis/state")},
         {shell.getRunningProgram(),
             fs.combine(diskPath, "programs/jam")},
@@ -920,7 +923,8 @@ function private.setupIgnoredBlocks(placeTorches)
           "press [Enter] to confirm.           \n\n" ..
           "Oh, and you can place the blocks      \n" ..
           "anywhere you want, I'll put them into \n" ..
-          "the right slots myself \\o/           \n")
+          "the right slots myself \\o/         \n\n" ..
+          "Recommended: Stone, Sand, Dirt, Gravel.")
     private.prompt({keys.enter}, {})
     print("OK, let me see...")
 
@@ -944,7 +948,7 @@ function private.setupIgnoredBlocks(placeTorches)
                               "block type, m'kay?                     \n")
                         print("Press [Enter] to try again m(.,.)m")
                         private.prompt({keys.enter}, {})
-                        return -- restarts the state
+                        return nil -- restarts the state
                     end
                     break
                 end
@@ -975,12 +979,12 @@ function private.setupIgnoredBlocks(placeTorches)
     term.setCursorPos(1, 1)
     if occupied == 0 then
         print("Woah, you want me to fetch, like,     \n" ..
-              "everything? Even cobblestone? That'll \n" ..
-              "mean a lot of additional running back \n" ..
+              "everything? Even stone? That'll mean a\n" ..
+              "lot of additional running back and    \n" ..
               "and forth, which is less efficient /o\\\n\n")
         write("Are you sure? [y/N] > ")
         if not private.prompt({keys.y}, {keys.n, keys.enter}) then
-            return -- restarts the state
+            return nil -- restarts the state
         end
         print("Oh boy... well, here goes nothing!")
     elseif occupied == 16 then
@@ -990,7 +994,7 @@ function private.setupIgnoredBlocks(placeTorches)
               "which I can put the stuff I dig up.  \n")
         print("Press [Enter] to try again -.-")
         private.prompt({keys.enter}, {})
-        return -- restarts the state
+        return nil -- restarts the state
     elseif occupied == 15 and placeTorches then
         print("Nice try, but this can't work in my  \n" ..
               "current configuration, since I need  \n" ..
@@ -1001,7 +1005,7 @@ function private.setupIgnoredBlocks(placeTorches)
               "in total. Can you do that for me?    \n")
         print("Press [Enter] to try again :/")
         private.prompt({keys.enter}, {})
-        return -- restarts the state
+        return nil -- restarts the state
     elseif occupied >= tempSlot or
            (placeTorches and occupied >= torchSlot)
     then
@@ -1015,7 +1019,7 @@ function private.setupIgnoredBlocks(placeTorches)
               " block   \n" ..
               "types. Press [Enter] to try again... \n")
         private.prompt({keys.enter}, {})
-        return -- restarts the state
+        return nil -- restarts the state
     elseif occupied > 6 then
         print("While this is technically a feasible \n" ..
               "configuration, I'd highly recommend  \n" ..
@@ -1027,7 +1031,7 @@ function private.setupIgnoredBlocks(placeTorches)
               "Is this really what you want?          ")
         write("[Y/n] > ")
         if not private.prompt() then
-            return -- restarts the state
+            return nil -- restarts the state
         end
         print("Well, if you say so... ley's do this!")
     else
@@ -1055,6 +1059,26 @@ end
 ]]
 function private.setupIgnoredSignatures()
     assert(false, "not yet implemented")
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("Please enter the name of a signature  \n" ..
+          "to ignore and press [Enter]. To finish\n" ..
+          "simply do not input a name and press  \n" ..
+          "[Enter].\n\n")
+    local qx, qy = term.getCursorPos()
+    print(" > \n")
+    local sx, sy = term.getCursorPos()
+    repeat
+        term.setCursorPos(qx, xy)
+        term.clearLine()
+        local name = read()
+        term.setCursorPos(sx, sy)
+        term.clearLine()
+        local _, count = camera.signature.get(name)
+        if count < 1 then
+            write("Unknown signature, ignoring.")
+        end
+    until not name or name == ""
 end
 
 --[[

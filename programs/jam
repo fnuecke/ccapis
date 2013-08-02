@@ -55,6 +55,9 @@ assert(os.loadAPI("apis/lama"))
 -- The channel on which we'll send out status messages.
 local sendChannel = 10113
 
+-- Every how many levels torch placing turtles should place a torch.
+local torchFrequency = 8
+
 -- Whether to write our progress into a log file (each time the program changes
 -- its state it would log that). This is primarily intended for debugging.
 local writeLog = false
@@ -233,14 +236,15 @@ end)
     if haveIgnoreChest then
         ignoreCount = private.setupIgnoredBlocksFromIgnoreChest(placeTorches)
     else
-        ignoreCount = private.setupIgnoredBlocks(placeTorches)
+        ignoreCount = private.setupIgnoredBlocks(placeTorches, placeIgnored)
         if not ignoreCount then
             return
         end
     end
 
     -- Drop any duplicates we have of the stuff we're supposed to ignore.
-    switchTo("goto_drop") -- Equivalent to drop, but more uniform flow.
+    -- Switching to goto_drop is equivalent to drop, but more uniform flow.
+    switchTo("goto_drop")
 end)
 
 --[[
@@ -749,7 +753,7 @@ end)
                     save()
                 end
             end
-        elseif placeTorches and lama.getY() % 8 == 0 then
+        elseif placeTorches and lama.getY() % torchFrequency == 0 then
             -- Place torches every couple of levels.
             turtle.select(torchSlot)
             turtle.placeDown()
@@ -945,7 +949,8 @@ function private.setupDigSite()
           "  Blocks to ignore in chest: " .. tostring(haveIgnoreChest))
     write("\nIs this correct? [Y/n] > ")
     if not private.prompt() then
-        return nil -- nil causes restart
+        -- nil causes restart.
+        return nil
     end
 
     -- Set up the disk so that it installs the script to any
@@ -1088,9 +1093,10 @@ end
     turtle's inventory and does some sanity checks on the found blocks.
 
     @param placeTorches whether we're to place torches or not.
+    @param placeIgnored whether we fill our hole with ignored blocks.
     @return the number of block types to ignore.
 ]]
-function private.setupIgnoredBlocks(placeTorches)
+function private.setupIgnoredBlocks(placeTorches, placeIgnored)
     -- If we come here a dig site has already been set up, so we just need to
     -- know which block types to ignore.
     term.clear()
@@ -1130,7 +1136,8 @@ function private.setupIgnoredBlocks(placeTorches)
                               "block type, m'kay?                     \n")
                         print("Press [Enter] to try again m(.,.)m")
                         private.prompt({keys.enter}, {})
-                        return nil -- restarts the state
+                        -- Restarts the state.
+                        return nil
                     end
                     break
                 end
@@ -1166,7 +1173,8 @@ function private.setupIgnoredBlocks(placeTorches)
               "and forth, which is less efficient /o\\\n\n")
         write("Are you sure? [y/N] > ")
         if not private.prompt({keys.y}, {keys.n, keys.enter}) then
-            return nil -- restarts the state
+            -- Restarts the state.
+            return nil
         end
         print("Oh boy... well, here goes nothing!")
     elseif occupied == 16 then
@@ -1176,7 +1184,8 @@ function private.setupIgnoredBlocks(placeTorches)
               "which I can put the stuff I dig up.  \n")
         print("Press [Enter] to try again -.-")
         private.prompt({keys.enter}, {})
-        return nil -- restarts the state
+        -- Restarts the state.
+        return nil
     elseif occupied == 15 and placeTorches then
         print("Nice try, but this can't work in my  \n" ..
               "current configuration, since I need  \n" ..
@@ -1187,7 +1196,8 @@ function private.setupIgnoredBlocks(placeTorches)
               "in total. Can you do that for me?    \n")
         print("Press [Enter] to try again :/")
         private.prompt({keys.enter}, {})
-        return nil -- restarts the state
+        -- Restarts the state.
+        return nil
     elseif occupied >= tempSlot or
            (placeTorches and occupied >= torchSlot)
     then
@@ -1201,7 +1211,8 @@ function private.setupIgnoredBlocks(placeTorches)
               " block   \n" ..
               "types. Press [Enter] to try again... \n")
         private.prompt({keys.enter}, {})
-        return nil -- restarts the state
+        -- Restarts the state.
+        return nil
     elseif occupied > 6 then
         print("While this is technically a feasible \n" ..
               "configuration, I'd highly recommend  \n" ..
@@ -1213,7 +1224,8 @@ function private.setupIgnoredBlocks(placeTorches)
               "Is this really what you want?          ")
         write("[Y/n] > ")
         if not private.prompt() then
-            return nil -- restarts the state
+            -- Restarts the state.
+            return nil
         end
         print("Well, if you say so... ley's do this!")
     else
@@ -1605,7 +1617,8 @@ end
 ]]
 function private.drop(slot, keep)
     keep = keep or 0
-    local didLogFull = false -- Don't spam the log.
+    -- Don't spam the log. We DO spam the WIFI, though, since that can fail.
+    local didLogFull = false
     while turtle.getItemCount(slot) > keep do
         lama.turn(dropSide)
         turtle.select(slot)
@@ -1625,7 +1638,8 @@ end
     it succeeds.
 ]]
 function private.refuel(needed)
-    local didLogNoFuel = false -- Don't spam the log.
+    -- Don't spam the log. We DO spam the WIFI, though, since that can fail.
+    local didLogNoFuel = false
     while turtle.getFuelLevel() < needed do
         turtle.select(tempSlot)
         if turtle.getItemCount(tempSlot) == 0 then
@@ -1672,8 +1686,9 @@ end
     succeeds.
 ]]
 function private.restockTorches()
-    local didLogNoTorches = false -- Don't spam the log.
-    while turtle.getItemSpace(torchSlot) > 0 do
+    -- Don't spam the log. We DO spam the WIFI, though, since that can fail.
+    local didLogNoTorches = false
+    while turtle.getItemCount(torchSlot) < (256 / torchFrequency) do
         -- Select an empty slot because we cannot control how much we pull,
         -- then replenish our actual torch stack from that and drop the rest.
         turtle.select(tempSlot)
@@ -1767,7 +1782,8 @@ if args[1] == "reset" then
                 end
             else
                 print("Aborting.")
-                os.sleep(0.1) -- Eat key event.
+                -- Eat key event so it doesn't propagate into the shell.
+                os.sleep(0.1)
                 return false
             end
         end

@@ -180,31 +180,40 @@ end)
     Given an existing dig site adds a new turtle to work on it.
 ]]
 :add("add_turtle", function()
-    -- Based on the context, ask for the blocks to ignore. If we're a camera
-    -- turtle and there are signatures ask for the one to ignore, otherwise ask
-    -- the user to place some blocks in our inventory.
+    -- Copy global quarry settings.
     local diskPath = disk.getMountPath(rsDiskSide)
+    local jobFile = fs.combine(diskPath, jobFile)
+    local file = fs.open(jobFile, "r")
+    local jobData = (file and textutils.unserialize(file.readAll())) or {}
+    if file then file.close() end
+    placeTorches = placeTorches or jobData.placeTorches
+    placeIgnored = placeIgnored or jobData.placeIgnored
+    ignoreSignatures = ignoreSignatures or jobData.ignoreSignatures
+
+    -- Based on the context, ask for the blocks to ignore. If we're a camera
+    -- turtle and there are signatures we know what to ignore, otherwise ask
+    -- the user to place some blocks in our inventory.
     local diskSignaturesFile = fs.combine(diskPath, diskSignaturesFile)
-    if camera and camera.wrap() and
+    if ignoreSignatures and camera and camera.wrap() and
        fs.exists(diskSignaturesFile) and
        not fs.isDir(diskSignaturesFile)
     then
-        -- We got a camera turtle and we have signatures, ask for signatures to
-        -- ignore instead of overloading our inventory with blocks.
-        ignoreSignatures = private.setupIgnoredSignatures()
+        -- We got a camera turtle and we have ignored signatures as well as a
+        -- signature file, copy the file over.
+        if fs.exists(signaturesFile) then
+            fs.delete(signaturesFile)
+        end
+        fs.copy(diskSignaturesFile, signaturesFile)
     else
-        -- Remember how many block types we're supposed to ignore.
+        -- Ask for blocks to ignore and emember how many block types we're
+        -- supposed to ignore. If we got nothing we're supposed to try again.
         ignoreCount = private.setupIgnoredBlocks(placeTorches)
         if not ignoreCount then
             return
         end
     end
 
-    -- Drop any duplicates we have of the stuff we're supposed to ignore. Do
-    -- not count those drops into our sampling (that we use to determine which
-    -- ignored blocks come the most often, to make sure we compare to them
-    -- first for an early exit and thus faster average comparison time).
-    dontCountThat = true
+    -- Drop any duplicates we have of the stuff we're supposed to ignore.
     switchTo("goto_drop") -- Equivalent to drop, but more uniform flow.
 end)
 
@@ -236,75 +245,36 @@ end)
     private.sendMessage("state", "drop")
 
     -- Drop any surplus of the blocks we're supposed to ignore. We may have
-    -- gotten some when digging down.
-    dropped = dropped or {}
-    dropping = dropping or {}
-    for slot = 1, ignoreCount do
-        if turtle.getItemCount(slot) > 1 then
-            -- Keep track of how many of that type we dropped. We use this to
-            -- accumulate a growing sample size which allows us to sort the
-            -- blocks we should ignore in a way so that the first blocks are
-            -- more likely to be found, which should improve overall speed,
-            -- since on average it takes less time to check each block come by.
-            dropping[slot] = dropping[slot] or (turtle.getItemCount(slot) - 1)
-            save()
-
-            private.drop(slot, 1)
-
-            -- Update after successful drop (we do this in two phases in case
-            -- we're interrupted while dropping).
-            if not dontCountThat then
-                dropped[slot] = (dropped[slot] or 0) + dropping[slot]
+    -- gotten some when digging down. Hold on to that stuff if we're not yet
+    -- done with our job, so we still have a chance to place them while moving
+    -- up again.
+    if not job or not placeIgnored then
+        for slot = 1, ignoreCount do
+            if turtle.getItemCount(slot) > 1 then
+                private.drop(slot, 1)
             end
-            dropping[slot] = nil
-            save()
         end
     end
-
-    -- If anything is left as marked being dropped we were shut down while
-    -- dropping something, but the drop was actually successful. I'm not sure
-    -- if this can really happen, but just to make sure...
-    if not dontCountThat then
-        for slot, count in pairs(dropping) do
-            dropped[slot] = (dropped[slot] or 0) + dropping[slot]
-        end
-    end
-    dropping = nil
-    save()
 
     -- Drop all the items we actually found.
-    droppingSurplus = droppingSurplus or {}
     for slot = ignoreCount + 1, 16 do
         if not placeTorches or slot ~= torchSlot then
-            -- It may be that we found so many blocks that we're actually
-            -- supposed to ignore while digging down, that they spilled into
-            -- another slot. Check this here.
-            if turtle.getItemCount(slot) > 0 then
-                turtle.select(slot)
-                for ignoreSlot = 1, ignoreCount do
-                    if turtle.compareTo(ignoreSlot) then
-                        -- This is a block we're actually supposed to ignore!
-                        droppingSurplus[slot] = droppingSurplus[slot] or
-                            {ignoreSlot, turtle.getItemCount(slot)}
-                        save()
+            -- Make sure it's not a stack of ignored blocks we use to fill our
+            -- hole back up.
+            local skip = false
+            if ignoredLookup then
+                for i = 1, #ignoredLookup do
+                    if ignoredLookup[i] == slot then
+                        skip = true
+                        break
                     end
                 end
             end
-
-            private.drop(slot)
+            if not skip then
+                private.drop(slot)
+            end
         end
     end
-
-    -- Save the accumulated surplus drops.
-    if not dontCountThat then
-        for _, entry in pairs(droppingSurplus) do
-            local slot, count = entry[1], entry[2]
-            dropped[slot] = (dropped[slot] or 0) + count
-        end
-    end
-    droppingSurplus = nil
-    dontCountThat = nil
-    save()
 
     -- Continue with our current job, or get a new one if we don't have one.
     if job then
@@ -351,7 +321,6 @@ end)
     if nextJob <= jobData.totalJobs then
         job = nextJob
         jobData.nextJob = job + 1
-        placeTorches = placeTorches or jobData.placeTorches
         switchTo("refuel_job")
         log:info("Got one! Our new job ticket is #%d.", job)
     else
@@ -395,6 +364,8 @@ end)
     local tx, tz = private.computeCoordinates(job)
     log:info("On my way to my workplace (%d, %d)!", tx, tz)
     private.sendMessage("state", "goto_job")
+
+    -- Put any ignored blocks into the first four slots.
     turtle.select(1)
     -- Player being invulnerable can block this, so we have to keep trying.
     repeat
@@ -402,8 +373,6 @@ end)
         local path = private.generatePath(x, y, z, tx, -1, tz, "job")
     until lama.navigate(path, math.huge, true)
 
-    -- Put any ignored blocks into the first four slots.
-    turtle.select(1)
     if resumeDigUp then
         switchTo("dig_up")
     else
@@ -418,6 +387,8 @@ end)
 :add("dig_down", function()
     private.sendMessage("state", "dig_down")
 
+    -- Put any ignored blocks into the first four slots.
+    turtle.select(1)
     if resumeDigDown then
         log:info("Going back to where I left of digging.")
         local x, y, z, f = unpack(resumeDigDown)
@@ -426,6 +397,15 @@ end)
     end
     log:info("Looking for bedrock, can offer dancing skills.")
     repeat
+        -- Go down a bit slower to build up our block sampling on the way.
+        local ignored = private.shouldIgnore(
+            ignoreCount, turtle.detectDown, turtle.compareDown)
+        if ignored and type(ignored) == "number" then
+            dropped = dropped or {}
+            dropped[ignored] = (dropped[ignored] or 0) + 1
+            save()
+        end
+        turtle.select(1)
         local brokeStuff = private.suckAndDig(turtle.suckDown, turtle.digDown)
         local couldMove, whyNot = lama.down(math.huge, true)
         if not couldMove and whyNot == lama.reason.invulnerable_entity then
@@ -468,11 +448,9 @@ end)
     undo = nil
     save()
 
-    -- Computes the total number of samples we got of the block type in that
-    -- slot (including ones already dropped and ignored).
+    -- Get the total number of samples we got of the block type in that slot.
     local function getCount(slot)
-        local count = turtle.getItemCount(slot)
-        return dropped and (count + (dropped[slot] or 0)) or count
+        return dropped and dropped[slot] or 0
     end
     -- Swaps to slots in the inventory, while keeping an undo log to restore
     -- our state if we're shut down while we're at it (to avoid getting our
@@ -528,6 +506,35 @@ end)
         end
     end
 
+    -- Build a look-up table of slots that also contain ignored items in case
+    -- we dug up so many we had an overflow. This is used for quickly knowing
+    -- which slot to select for placing ignored blocks while moving up.
+    if placeIgnored then
+        local count = 0
+        for slot = ignoreCount + 1, 16 do
+            if turtle.getItemCount(slot) > 0 and
+               not placeTorches or slot ~= torchSlot
+            then
+                turtle.select(slot)
+                for ignoreSlot = 1, ignoreCount do
+                    if turtle.compareTo(ignoreSlot) then
+                        ignoredLookup = ignoredLookup or {}
+                        table.insert(ignoredLookup, slot)
+                        count = count + turtle.getItemCount(slot)
+                        break
+                    end
+                end
+            end
+        end
+        for slot = 1, ignoreCount do
+            count = count + (turtle.getItemCount(slot) - 1)
+        end
+        placeIgnoredRequired = (math.abs(lama.getY()) - 1) - count
+        if placeIgnoredRequired <= 0 then
+            placeIgnoredRequired = nil
+        end
+    end
+
     switchTo("dig_up")
 end)
 
@@ -556,20 +563,36 @@ end)
             repeat until lama.moveto(x, y, z, f, math.huge, true)
             resumeDigUp = nil
         end
-        dropped = dropped or {}
         while lama.getY() < -1 do
             repeat
                 -- See if we're ignoring that block. If we are, remember we found
                 -- one more of that type (to increase our sample size), otherwise
                 -- try to dig it out.
-                local ignored = private.shouldIgnore(ignoreCount)
+                local ignored = private.shouldIgnore(
+                    ignoreCount, turtle.detect, turtle.compare)
                 if ignored then
                     if type(ignored) == "number" then
+                        dropped = dropped or {}
                         dropped[ignored] = (dropped[ignored] or 0) + 1
                         save()
+                        -- If we still need some blocks to fill up the hole we
+                        -- dug let's ignore that we should ignore this block
+                        -- and dig it up anyway!
+                        if placeIgnoredRequired and
+                           placeIgnoredRequired > 0
+                        then
+                            ignored = false
+                            turtle.select(1)
+                            placeIgnoredRequired = placeIgnoredRequired - 1
+                            if placeIgnoredRequired == 0 then
+                                placeIgnoredRequired = nil
+                            end
+                        end
                     end
                 else
                     turtle.select(ignoreCount + 1)
+                end
+                if not ignored then
                     private.suckAndDig(turtle.suck, turtle.dig)
                 end
                 if private.isInventoryFull() then
@@ -578,10 +601,58 @@ end)
                 end
                 lama.turnRight()
             until lama.getFacing() == lama.side.north
+
             -- Can only be blocked by a player, so we just wait.
             while not lama.up(math.huge, true) do end
+
+            -- Try to get rid of the blocks we're supposed to ignore but had to
+            -- pick up while digging down.
+            local placed = false
+            if placeIgnored then
+                -- Figure out from which slot to place.
+                local slot
+                if ignoredLookup then
+                    -- The table is guaranteed to not be empty because we only
+                    -- remove entries below, after the actual placement, and
+                    -- set it to nil if it's empty at that point.
+                    -- The slot we select may be empty if and only if we were
+                    -- interrupted while placing the block the first time
+                    -- around. This makes the turtle.placeDown() a no-op which
+                    -- is not a problem.
+                    slot = ignoredLookup[#ignoredLookup]
+                else
+                    -- No more lookup-blocks. Draw from our reference stacks.
+                    for i = 1, ignoreCount do
+                        -- Keep at least one of our reference blocks.
+                        if turtle.getItemCount(i) > 1 then
+                            slot = i
+                            break
+                        end
+                    end
+                end
+
+                -- If we have a slot, place a block. It even rhymes!
+                if slot then
+                    turtle.select(slot)
+                    turtle.placeDown()
+                    placed = true
+                    -- Update lookup table if we emptied a slot, so we don't
+                    -- start placing other blocks that we pick up into that
+                    -- slot instead.00
+                    if ignoredLookup then
+                        if turtle.getItemCount(slot) == 0 then
+                            table.remove(ignoredLookup)
+                        end
+                        if #ignoredLookup == 0 then
+                            ignoredLookup = nil
+                        end
+                        save()
+                    end
+                end
+            end
+
             -- Place torches every couple of levels.
-            if placeTorches and lama.getY() % 8 == 0 then
+            if not placed and placeTorches and lama.getY() % 8 == 0 then
                 turtle.select(torchSlot)
                 turtle.placeDown()
             end
@@ -590,6 +661,7 @@ end)
         assert("invalid program state")
     end
 
+    ignoredLookup = nil
     job = nil
     switchTo("goto_drop")
 end)
@@ -728,11 +800,52 @@ function private.setupDigSite()
 
     term.clear()
     term.setCursorPos(1, 1)
+    write("Do you want me to try getting rid of\n" ..
+          "ignored blocks by placing them when \n" ..
+          "moving up again? This will be slower\n" ..
+          "than just dropping them off like all\n" ..
+          "the other blocks, but avoid clogging\n" ..
+          "up the drop chest.\n\n" ..
+          "Place ignored blocks? [Y/n] > ")
+    local placeIgnored = private.prompt()
+
+    -- We have the camera API and some signatures, ask for signatures to ignore
+    -- for any camera turtles added to the quarry.
+    local ignoredSignatures
+    if camera and fs.exists(signaturesFile) and
+       not fs.isDir(signaturesFile) and false
+    then
+        -- TODO
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("Please enter the name of a signature  \n" ..
+              "to ignore and press [Enter]. To finish\n" ..
+              "simply do not input a name and press  \n" ..
+              "[Enter].\n\n")
+        local qx, qy = term.getCursorPos()
+        print(" > \n")
+        local sx, sy = term.getCursorPos()
+        repeat
+            term.setCursorPos(qx, xy)
+            term.clearLine()
+            local name = read()
+            term.setCursorPos(sx, sy)
+            term.clearLine()
+            local _, count = camera.signature.get(name)
+            if count < 1 then
+                write("Unknown signature, ignoring.")
+            end
+        until not name or name == ""
+    end
+
+    term.clear()
+    term.setCursorPos(1, 1)
     print("Please confirm your settings\n\n" ..
           "  Radius: " .. radius .. "\n" ..
           "    Affected chunks: " .. chunks .. "\n" ..
           "    Holes/Jobs: " .. jobCount     .. "\n" ..
-          "  Place torches: " .. tostring(placeTorches) .. "\n")
+          "  Place torches: " .. tostring(placeTorches) .. "\n" ..
+          "  Place ignored blocks: " .. tostring(placeIgnored) .. "\n")
     write("Is this correct? [Y/n] > ")
     if not private.prompt() then
         return nil -- nil causes restart
@@ -785,7 +898,9 @@ function private.setupDigSite()
     local file = fs.open(jobFile, "w")
     assert(file, "Could not open job file for writing.")
     file.write(textutils.serialize({totalJobs = jobCount,
-                                    placeTorches = placeTorches}))
+                                    placeTorches = placeTorches,
+                                    placeIgnored = placeIgnored,
+                                    ignoredSignatures = ignoredSignatures}))
     file.close()
 
     -- We write a startup file to the disk drive that will install our
@@ -902,7 +1017,7 @@ then
 end]=], rsDiskSide, signaturesFile, diskSignaturesFile))
     file.close()
 
-    -- Reboot to initialize ourself from the disk.
+    -- To indicate whether we need to check for the chest.
     return placeTorches
 end
 
@@ -918,13 +1033,16 @@ function private.setupIgnoredBlocks(placeTorches)
     -- know which block types to ignore.
     term.clear()
     term.setCursorPos(1, 1)
-    print("Please insert one of each block type  \n" ..
-          "that you want to avoid. When done,    \n" ..
-          "press [Enter] to confirm.           \n\n" ..
+    print("Please put one of each block type that\n" ..
+          "you want to avoid into my inventory.  \n" ..
+          "When done, press [Enter] to confirm.\n\n" ..
           "Oh, and you can place the blocks      \n" ..
           "anywhere you want, I'll put them into \n" ..
           "the right slots myself \\o/         \n\n" ..
-          "Recommended: Stone, Sand, Dirt, Gravel.")
+          "Recommended: Stone, Sand, Dirt and    \n" ..
+          "possibly Gravel. You may also want to \n" ..
+          "add Cobblestone, to allow placing it  \n" ..
+          "while moving back up.")
     private.prompt({keys.enter}, {})
     print("OK, let me see...")
 
@@ -1049,36 +1167,6 @@ function private.setupIgnoredBlocks(placeTorches)
     end
     os.sleep(2.5)
     return occupied
-end
-
---[[
-    This function asks the user for the names of the block types to ignore. It
-    validates the input against the list of known signatures.
-
-    @return a table with the names of the signatures to ignore.
-]]
-function private.setupIgnoredSignatures()
-    assert(false, "not yet implemented")
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("Please enter the name of a signature  \n" ..
-          "to ignore and press [Enter]. To finish\n" ..
-          "simply do not input a name and press  \n" ..
-          "[Enter].\n\n")
-    local qx, qy = term.getCursorPos()
-    print(" > \n")
-    local sx, sy = term.getCursorPos()
-    repeat
-        term.setCursorPos(qx, xy)
-        term.clearLine()
-        local name = read()
-        term.setCursorPos(sx, sy)
-        term.clearLine()
-        local _, count = camera.signature.get(name)
-        if count < 1 then
-            write("Unknown signature, ignoring.")
-        end
-    until not name or name == ""
 end
 
 --[[
@@ -1301,8 +1389,8 @@ end
 --[[
     Checks if a block in front of us should be ignored.
 ]]
-function private.shouldIgnore(ignoreCount)
-    if not turtle.detect() then
+function private.shouldIgnore(ignoreCount, detect, compare)
+    if not detect() then
         return true
     end
     for slot = 1, ignoreCount do

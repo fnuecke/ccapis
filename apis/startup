@@ -181,6 +181,9 @@ function disable(name)
         local priority = getPriority(name)
         local pathEnabled = fs.combine(startupPath, priority .. "_" .. name)
         local pathDisabled = pathEnabled .. "." .. disabledPostfix
+        if fs.exists(pathDisabled) then
+            fs.delete(pathDisabled)
+        end
         fs.move(pathEnabled, pathDisabled)
     end
     return true

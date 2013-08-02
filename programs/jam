@@ -652,7 +652,7 @@ end)
                 -- Coming here means we want to get more ignored blocks to fill
                 -- up the hole we dug. In that case make sure that if we start
                 -- a new stack we keep track of it in our lookup table.
-                local emptySlotsBeforeDigging
+                local emptySlotsBeforeDigging = {}
                 for slot = ignoreCount + 1, 16 do
                     if not placeTorches or slot ~= torchSlot then
                         if turtle.getItemCount(slot) == 0 then

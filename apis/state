@@ -75,7 +75,7 @@ local class, private = {}
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.1"
+version = "1.2"
 
 --[[
     Creates a new state machine which will save its state to file a the
@@ -109,8 +109,14 @@ function new(savePath)
         metatable.environment = {}
     else
         local file = fs.open(savePath, "r")
-        metatable.current = textutils.unserialize(file.readLine())
-        metatable.environment = textutils.unserialize(file.readAll())
+        metatable.current = private.unserialize(file.readLine())
+        if type(metatable.current) ~= "string" then
+            metatable.current = nil
+        end
+        metatable.environment = private.unserialize(file.readAll())
+        if type(metatable.environment) ~= "table" then
+            metatable.environment = {}
+        end
         file.close()
     end
     -- Allos us to delete the state file after the program finishes.
@@ -220,4 +226,17 @@ function private.validate(state)
     assert(metatable and getmetatable(state).__index == class,
         "'state' must be a state machine instance")
     return metatable
+end
+
+--[[
+    Custom implementation of textutils.unserialize() that properly handles
+    serialized math.huge values...
+]]
+function private.unserialize(data)
+    local result, reason = loadstring("return " .. data, filename)
+    if not result then
+        return true, data
+    else
+        return true, setfenv(result, {["inf"] = math.huge})()
+    end
 end

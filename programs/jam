@@ -143,9 +143,11 @@ local program = state.new(stateFile)
     assert(not fs.exists(jobFile) or not fs.isDir(jobFile),
         "Bad disk, folder at job file location.")
     if not fs.exists(jobFile) then
-        placeTorches, haveIgnoreChest = private.setupDigSite()
-        if placeTorches == nil then
-            return -- nil is the abort signal, restart the state.
+        local jobCount, placeTorches, placeIgnored, haveIgnoreChest =
+            private.setupDigSite()
+        if jobCount == nil then
+            -- nil is the abort signal, restart the state.
+            return
         end
 
         -- Check for chests.
@@ -161,6 +163,38 @@ local program = state.new(stateFile)
             assert(turtle.detect(),
                 "Bad setup detected, no torch/ignored blocks chest found.")
         end
+        lama.turn((diskSide + 2) % 4)
+
+        -- Ask for ignored blocks in ignore chest before getting started.
+        if haveIgnoreChest then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("Please put as many of each block type \n" ..
+                  "that you want to avoid into the torch \n" ..
+                  "chest as you wish to employ turtles.  \n" ..
+                  "(For example: one stack each)       \n\n" ..
+                  "When done, press [Enter] to confirm.\n\n" ..
+                  "Recommended: Stone, Dirt and possibly \n" ..
+                  "Gravel or Sand (depends on the biome).\n" ..
+                  (placeIgnored and
+                  "You may also want to add Cobblestone, \n" ..
+                  "to allow placing it while moving up."
+                  or "" ))
+            private.prompt({keys.enter}, {})
+        end
+
+        -- If all went well, write the job file to the disk so that all turtles
+        -- placed into the dock from now on will be initialized automatically.
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("Writing settings to disk... ")
+        local file = fs.open(jobFile, "w")
+        assert(file, "Could not open job file for writing.")
+        file.write(textutils.serialize({totalJobs = jobCount,
+                                        placeTorches = placeTorches,
+                                        placeIgnored = placeIgnored,
+                                        haveIgnoreChest = haveIgnoreChest}))
+        file.close()
     end
 
     -- Next up: add this turtle as a worker to the quarry.
@@ -190,13 +224,18 @@ end)
 
     placeIgnored = placeIgnored or jobData.placeIgnored
     placeTorches = placeTorches or jobData.placeTorches
+    haveIgnoreChest = haveIgnoreChest or jobData.haveIgnoreChest
 
     -- Ask for the blocks to ignore to be placed in our inventory. Remember how
     -- many block types we're supposed to ignore. If we got nothing (nil) we're
     -- supposed to try again.
-    ignoreCount = private.setupIgnoredBlocks(placeTorches, haveIgnoreChest)
-    if not ignoreCount then
-        return
+    if haveIgnoreChest then
+        ignoreCount = private.setupIgnoredBlocksFromIgnoreChest(placeTorches)
+    else
+        ignoreCount = private.setupIgnoredBlocks(placeTorches)
+        if not ignoreCount then
+            return
+        end
     end
 
     -- Drop any duplicates we have of the stuff we're supposed to ignore.
@@ -827,7 +866,8 @@ function private.setupDigSite()
         term.clearLine()
         write(string.format(size == 1 and format[1] or format[2],
                             radius, chunks, jobCount))
-        term.setCursorPos(rx, ry) -- For termination not f*cking up the shell.
+        -- For termination not f*cking up the shell.
+        term.setCursorPos(rx, ry)
 
         local _, code = os.pullEvent("key")
         if code == keys.right then
@@ -842,7 +882,6 @@ function private.setupDigSite()
             size = math.max(1, size - 10)
         end
     until code == keys.enter
-
 
     local upOption = 0
     repeat
@@ -876,6 +915,24 @@ function private.setupDigSite()
     local placeIgnored = upOption == 0
     local placeTorches = upOption == 1
 
+    local haveIgnoreChest
+    if not placeTorches then
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("Since the turtles won't need one of \n" ..
+              "the chests for torches, you can     \n" ..
+              "instead place blocks you want your  \n" ..
+              "turtles to ignore in that chest.    \n" ..
+              "This way you won't have to add them \n" ..
+              "to each one individually. You'll    \n" ..
+              "have to place exacly one stack of at\n" ..
+              "least a size equal to the number of \n" ..
+              "turtles you plan to use into the    \n" ..
+              "torch chest.\n")
+        write("Do you want to do this? [Y/n] > ")
+        haveIgnoreChest = private.prompt()
+    end
+
     term.clear()
     term.setCursorPos(1, 1)
     print("Please confirm your settings\n\n" ..
@@ -883,8 +940,9 @@ function private.setupDigSite()
           "    Affected chunks: " .. chunks .. "\n" ..
           "    Holes/Jobs: " .. jobCount     .. "\n" ..
           "  Place blocks: " .. tostring(placeIgnored) .. "\n" ..
-          "  Place torches: " .. tostring(placeTorches) .. "\n")
-    write("Is this correct? [Y/n] > ")
+          "  Place torches: " .. tostring(placeTorches) .. "\n" ..
+          "  Blocks to ignore in chest: " .. tostring(haveIgnoreChest))
+    write("\nIs this correct? [Y/n] > ")
     if not private.prompt() then
         return nil -- nil causes restart
     end
@@ -917,6 +975,9 @@ function private.setupDigSite()
         if fs.exists(file[1]) and not fs.isDir(file[1]) then
             -- Update / install.
             print(" > " .. file[2])
+            if fs.exists(file[2]) then
+                fs.delete(file[2])
+            end
             fs.copy(file[1], file[2])
         elseif fs.exists(file[2]) and not fs.isDir(file[2]) then
             -- Already there.
@@ -926,15 +987,6 @@ function private.setupDigSite()
         end
         os.sleep(0.1)
     end
-
-    local jobFile = fs.combine(diskPath, jobFile)
-    print(" > " .. jobFile)
-    local file = fs.open(jobFile, "w")
-    assert(file, "Could not open job file for writing.")
-    file.write(textutils.serialize({totalJobs = jobCount,
-                                    placeTorches = placeTorches,
-                                    placeIgnored = placeIgnored}))
-    file.close()
 
     -- We write a startup file to the disk drive that will install our
     -- environment to any non-initialized turtles started up in front of it.
@@ -1027,8 +1079,7 @@ then
 end]=], rsDiskSide))
     file.close()
 
-    -- To indicate whether we need to check for the chest.
-    return placeTorches
+    return jobCount, placeTorches, placeIgnored, haveIgnoreChest
 end
 
 --[[
@@ -1049,10 +1100,12 @@ function private.setupIgnoredBlocks(placeTorches)
           "Oh, and you can place the blocks into \n" ..
           "any slot you want, I'll put them into \n" ..
           "the right ones myself \\o/          \n\n" ..
-          "Recommended: Stone, Sand, Dirt and    \n" ..
-          "possibly Gravel. You may also want to \n" ..
-          "add Cobblestone, to allow placing it  \n" ..
-          "while moving back up.")
+          "Recommended: Stone, Dirt and possibly \n" ..
+          "Gravel or Sand (depends on the biome).\n" ..
+          (placeIgnored and
+          "You may also want to add Cobblestone, \n" ..
+          "to allow placing it while moving up."
+          or "" ))
     private.prompt({keys.enter}, {})
     print("OK, let me see...")
 
@@ -1175,8 +1228,89 @@ function private.setupIgnoredBlocks(placeTorches)
         }
         print(agree[math.random(1, #agree)])
     end
-    os.sleep(2.5)
+    os.sleep(1.5)
     return occupied
+end
+
+--[[
+    An automated version for getting the blocks we should ignore.
+]]
+function private.setupIgnoredBlocksFromIgnoreChest(placeTorches)
+    lama.turn(torchSide)
+    turtle.select(1)
+
+    -- If we're resuming in here, it means we only have stuff we're supposed
+    -- to ignore in our inventory. Dump it back and start over.
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) > 0 then
+            turtle.select(slot)
+            assert(turtle.drop(), "Chest with blocks to ignore is full!")
+        end
+    end
+
+    -- Suck as often as we can. If there's more, silently ignore it.
+    for slot = 1, 16 do
+        if slot ~= tempSlot and not placeTorches or slot ~= torchSlot then
+            turtle.select(slot)
+            if not turtle.suck() then
+                -- Stop if there's nothing else in there.
+                break
+            end
+        end
+    end
+    -- Put everything except one item back.
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) > 0 then
+            turtle.select(slot)
+            turtle.drop(turtle.getItemCount(slot) - 1)
+        else
+            break
+        end
+    end
+
+    -- Merge duplicates, compact the range and dump duplicates.
+    for slot = 2, 16 do
+        -- Ignore empty slots.
+        if turtle.getItemCount(slot) > 0 then
+            -- Compare to all preceding slots
+            for otherSlot = 1, slot - 1 do
+                if turtle.compareTo(otherSlot) then
+                    -- Got one of the same kind, try to merge.
+                    if not turtle.transferTo(otherSlot) or
+                       turtle.getItemCount(slot) > 0
+                    then
+                        -- Could not merge (other stack already full) or still
+                        -- have some left (other stack is now full and there's
+                        -- still some left here). Drop the remainder.
+                        assert(turtle.drop(),
+                            "Chest with blocks to ignore is full!")
+                    end
+                end
+            end
+        end
+        -- If there's still something in the slot we didn't find anything of
+        -- the same kind in our inventory. Look for an empty slot at a lower
+        -- index to get a continuous segment.
+        if turtle.getItemCount(slot) > 0 then
+            for otherSlot = 1, slot - 1 do
+                if turtle.getItemCount(otherSlot) == 0 then
+                    turtle.transferTo(otherSlot)
+                    break
+                end
+            end
+        end
+    end
+
+    -- Count the remaining number of ignored block types and return that.
+    local count = 0
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) > 0 then
+            count = count + 1
+        else
+            break
+        end
+    end
+    return count
 end
 
 --[[

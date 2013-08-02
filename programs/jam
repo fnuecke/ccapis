@@ -308,13 +308,16 @@ end)
 
     -- Wait a bit to finish moving and connect to the disk drive.
     for i = 1, 20 do
-        if disk.isPresent(rsDiskSide) then
+        -- This is really weird, but sometimes even though there's a disk drive
+        -- detected, it seems it isn't necessarily mounted. So we wait until
+        -- it's actually mounted... damn timining problems. I think.
+        if disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide) then
             break
         end
         os.sleep(0.1)
     end
 
-    assert(disk.isPresent(rsDiskSide),
+    assert(disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
     local diskPath = disk.getMountPath(rsDiskSide)
     local jobFile = fs.combine(diskPath, jobFile)
@@ -377,6 +380,9 @@ end)
         local x, y, z = lama.get()
         local path = private.generatePath(x, y, z, tx, -1, tz, "job")
     until lama.navigate(path, math.huge, true)
+
+    -- Put any ignored blocks into the first four slots.
+    turtle.select(1)
     if resumeDigUp then
         switchTo("dig_up")
     else
@@ -391,8 +397,6 @@ end)
 :add("dig_down", function()
     private.sendMessage("state", "dig_down")
 
-    -- Put any ignored blocks into the first four slots.
-    turtle.select(1)
     if resumeDigDown then
         log:info("Going back to where I left of digging.")
         local x, y, z, f = unpack(resumeDigDown)
@@ -556,7 +560,7 @@ end)
             -- Can only be blocked by a player, so we just wait.
             while not lama.up(math.huge, true) do end
             -- Place torches every couple of levels.
-            if lama.getY() % 8 == 0 then
+            if placeTorches and lama.getY() % 8 == 0 then
                 turtle.select(torchSlot)
                 turtle.placeDown()
             end

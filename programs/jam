@@ -6,24 +6,40 @@
 
     This program is intended to run on turtles working in a very specific
     environment, to collaboratively (optional) dig up blocks of interest in a
-    designated area.
+    designated area. Yes, it's a mining program ;)
 
-    This program is copied onto turtles thrown into that environment by the
-    initialization program that comes with this program, which should be stored
-    on a floppy disk in a drive part of the docking bay of the excavation area.
-    See that program for more information on how to set up that docking bay.
+    Features:
+      - Fully resumable, thanks to LAMA and my state API. This resume is *very*
+        stable. It even survived multiple game crashes (out of memory).
+      - Interactively configurable (quarry size, torch placement).
+      - Supports turtles cooperatively working on the same quarry, up to the
+        total number of holes being dug - one turtle per hole, max. If there's
+        fewer turtles than holes, the holes will be worked on sequentially.
+      - Adding new turtles is super-easy, just place them into the dock, facing
+        the fuel chest (away from the disk drive) and the environment will be
+        installed on it and executed.
 
-    Turtles running this program will fetch a job ticket at the docking bay,
-    being tracked on the floppy disk, and then execute an excavation at a
-    location defined by that job ticket. The excavation will be performed as
-    digging straight down to bedrock, then working back up while inspecting the
-    four blocks facing the turtle and excavating them if they're not ignored.
-    If at any point the turtle's inventory fills up (no more free slot), it
-    will take a break to deliver the excavated materials, then resume its job.
-    Once done with its job, instead of resuming after delivering its items, it
-    will fetch a new ticket. It continues to do so until there are no more job
-    tickets, at which point it will just move out of the way of turtles that
-    are still working (if any).
+    To get started, set up the docking station like this (top-down view).
+
+         CF       Where: CD = Chest for dropping found blocks.
+      CD TU CT           CF = Chest with fuel.
+         DD              CT = Chest with torches (only needed when used).
+                         DD = A disk drive with an empty floppy inside.
+                         TU = A turtle, looking at the fuel chest.
+
+    Make sure the turtle in the middle is facing the fuel chest, then install
+    the environment like this:
+        > pastebin get h9KJ4DRt jam-install
+        > jam-install
+
+    The program will guide you through the next steps. Always make sure there's
+    enough fuel (and if used, torches) in the chests, and empty the dropbox
+    regularly!
+
+    To add more turtles to an existing quarry, simply place them into the
+    docking station like you did the first turtle, i.e. facing the fuel chest.
+    It will automatically be configured by the program written onto the floppy
+    disk when the quarry was set up and then run this program.
 ]]
 
 assert(os.loadAPI("apis/bapil"))
@@ -89,9 +105,9 @@ local torchSlot = 16
 
 -- Same as diskSide but using redstone.getSides() constants (for disk API).
 local rsDiskSide = ({[lama.side.forward] = "front",
-                     [lama.side.right] = "right",
-                     [lama.side.back] = "back",
-                     [lama.side.left] = "left"})[diskSide]
+                     [lama.side.right]   = "right",
+                     [lama.side.back]    = "back",
+                     [lama.side.left]    = "left"})[diskSide]
 
 -- The name of the file in which the camera API stores its signatures. This is
 -- only used if a camera is attached to the turtle.
@@ -306,11 +322,13 @@ end)
     -- Make sure the disk drive is behind us.
     lama.turn((diskSide + 2) % 4)
 
-    -- Wait a bit to finish moving and connect to the disk drive.
-    for i = 1, 20 do
-        -- This is really weird, but sometimes even though there's a disk drive
-        -- detected, it seems it isn't necessarily mounted. So we wait until
-        -- it's actually mounted... damn timining problems. I think.
+    -- Wait a bit to finish moving and connect to the disk drive. This is
+    -- really weird, but apparently a disk drive can be 'present' before it is
+    -- mounted. So we wait until it's actually mounted... damn timining
+    -- problems. We limit our number of tries, in case the disk drive was
+    -- removed or - by some *very* slim chance - we're not in the right spot.
+    -- Try for a total of five seconds, so lag is a non-issue.
+    for i = 1, 50 do
         if disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide) then
             break
         end

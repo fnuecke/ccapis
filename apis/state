@@ -235,8 +235,8 @@ end
 function private.unserialize(data)
     local result, reason = loadstring("return " .. data, filename)
     if not result then
-        return true, data
+        return data
     else
-        return true, setfenv(result, {["inf"] = math.huge})()
+        return setfenv(result, {["inf"] = math.huge})()
     end
 end

@@ -690,7 +690,7 @@ end)
                         table.insert(ignoredLookup, slot)
                     end
                 end
-                diggingAnIgnoredBlock = false
+                diggingAnIgnoredBlock = nil
                 save()
             end
 

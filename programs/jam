@@ -827,11 +827,17 @@ end)
 end)
 
 -------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 -- Utility functions                                                         --
+-------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
 -- Private namespace.
 private = {}
+
+-------------------------------------------------------------------------------
+-- Quarry and turtle setup                                                   --
+-------------------------------------------------------------------------------
 
 --[[
     Asks the user for the size of the dig site and configures the floppy disk.
@@ -960,130 +966,209 @@ function private.setupDigSite()
     print("Writing initialization data to disk...")
 
     local install = {
-        {bapil.resolveAPI("apis/bapil"),
-            fs.combine(diskPath, "apis/bapil")},
-        {bapil.resolveAPI("apis/lama"),
-            fs.combine(diskPath, "apis/lama")},
-        {bapil.resolveAPI("apis/logger"),
-            fs.combine(diskPath, "apis/logger")},
-        {bapil.resolveAPI("apis/stacktrace"),
-            fs.combine(diskPath, "apis/stacktrace")},
-        {bapil.resolveAPI("apis/startup"),
-            fs.combine(diskPath, "apis/startup")},
-        {bapil.resolveAPI("apis/state"),
-            fs.combine(diskPath, "apis/state")},
-        {shell.getRunningProgram(),
-            fs.combine(diskPath, "programs/jam")}
-    }
-    fs.makeDir(fs.combine(diskPath, "apis"))
-    fs.makeDir(fs.combine(diskPath, "programs"))
-    for _, file in ipairs(install) do
-        if fs.exists(file[1]) and not fs.isDir(file[1]) then
-            -- Update / install.
-            print(" > " .. file[2])
-            if fs.exists(file[2]) then
-                fs.delete(file[2])
-            end
-            fs.copy(file[1], file[2])
-        elseif fs.exists(file[2]) and not fs.isDir(file[2]) then
-            -- Already there.
-            print(" > " .. file[2])
-        elseif not file[3] then
-            error("missing file " .. file[1])
-        end
-        os.sleep(0.1)
-    end
-
-    -- We write a startup file to the disk drive that will install our
-    -- environment to any non-initialized turtles started up in front of it.
-    local startupFile = fs.combine(diskPath, "startup")
-    print(" > " .. startupFile)
-    local file = fs.open(startupFile, "w")
-    file.write(string.format([=[-- Automatically generated startup file.
--- Ignore anything that isn't a turtle.
-if not turtle then
-    return shell.run("/startup")
-end
+        {from = bapil.resolveAPI("apis/bapil"),
+         to   = fs.combine(diskPath, "apis/bapil")},
+        {from = bapil.resolveAPI("apis/lama"),
+         to   = fs.combine(diskPath, "apis/lama")},
+        {from = bapil.resolveAPI("apis/logger"),
+         to   = fs.combine(diskPath, "apis/logger")},
+        {from = bapil.resolveAPI("apis/stacktrace"),
+         to   = fs.combine(diskPath, "apis/stacktrace")},
+        {from = bapil.resolveAPI("apis/startup"),
+         to   = fs.combine(diskPath, "apis/startup")},
+        {from = bapil.resolveAPI("apis/state"),
+         to   = fs.combine(diskPath, "apis/state")},
+        {from = shell.getRunningProgram(),
+         to   = fs.combine(diskPath, "programs/jam")},
+        -- We write a startup file to the disk drive that will install our
+        -- environment to any new turtles started up in front of it. This is
+        -- pretty much the same we do here, in reverse.
+        {content = string.format(
+[=[-- Ignore anything that isn't a turtle.
+if not turtle then return shell.run("/startup") end
 
 -- Ignore if we're on the wrong side. Otherwise get the mount path of the disk.
 local diskSide = %q
-if not disk.isPresent(diskSide) then
-    return shell.run("/startup")
-end
 local diskPath = disk.getMountPath(diskSide)
+if not disk.isPresent(diskSide) then return shell.run("/startup") end
+
+-- Update the environment, copy APIs, create startup file, that kind of stuff.
+print("Updating JAM installation...")
 
 -- Set label if necessary.
 if os.getComputerLabel() == nil or os.getComputerLabel() == "" then
     os.setComputerLabel("JAM-" .. os.getComputerID())
 end
 
--- Install APIs if they're not there yet. Update them if the file size differs.
+-- List of files we put on our turtles.
 local install = {
-    {"apis/bapil",      fs.combine(diskPath, "apis/bapil")},
-    {"apis/lama",       fs.combine(diskPath, "apis/lama")},
-    {"apis/logger",     fs.combine(diskPath, "apis/logger")},
-    {"apis/stacktrace", fs.combine(diskPath, "apis/stacktrace")},
-    {"apis/startup",    fs.combine(diskPath, "apis/startup")},
-    {"apis/state",      fs.combine(diskPath, "apis/state")}
+    {from = fs.combine(diskPath, "apis/bapil"),
+     to   = "/apis/bapil"},
+    {from = fs.combine(diskPath, "apis/lama"),
+     to   = "/apis/lama"},
+    {from = fs.combine(diskPath, "apis/logger"),
+     to   = "/apis/logger"},
+    {from = fs.combine(diskPath, "apis/stacktrace"),
+     to   = "/apis/stacktrace"},
+    {from = fs.combine(diskPath, "apis/startup"),
+     to   = "/apis/startup"},
+    {from = fs.combine(diskPath, "apis/state"),
+     to   = "/apis/state"},
+    {content =
+[[if startup then return false end
+os.loadAPI("apis/bapil")
+bapil.hijackOSAPI()
+assert(os.loadAPI("apis/stacktrace"))
+_G.pcall = stacktrace.tpcall
+assert(os.loadAPI("apis/startup"))
+return startup.run()]],
+     to = "/startup", keep = true}
 }
-fs.makeDir("apis")
-for _, file in ipairs(install) do
-    assert(fs.exists(file[2]) or file[3],
-        "Bad disk, missing file: " .. file[2])
-    if not fs.exists(file[1]) or not fs.isDir(file[1]) and
-       fs.getSize(file[2]) ~= fs.getSize(file[1])
-    then
-        if fs.exists(file[1]) then
-            fs.delete(file[1])
+
+local function areDifferent(f1, f2)
+    local s1 = fs.getSize(f1)
+    local s2 = fs.getSize(f2)
+    if s1 == 512 or s2 == 512 then return true end
+    s1 = s1 - fs.getName(f1):len()
+    s2 = s2 - fs.getName(f2):len()
+    return s1 ~= s2
+end
+
+local requiredDiskSpace, folders = 0, {}
+for _, entry in ipairs(install) do
+    assert(not fs.exists(entry.to) or not fs.isDir(entry.to),
+        "Bad turtle, folder in location " .. entry.to)
+    local folder = entry.to:sub(1, #entry.to - fs.getName(entry.to):len())
+    assert(not fs.exists(folder) or fs.isDir(folder),
+           "Bad turtle, file in location " .. folder)
+    if not fs.exists(folder) and not folders[folder] then
+        requiredDiskSpace = requiredDiskSpace + 512
+        folders[folder] = true
+    end
+
+    if not fs.exists(entry.to) or not entry.keep then
+        if entry.from then
+            assert(fs.exists(entry.from) and not fs.isDir(entry.from),
+                "Bad disk, missing file " .. entry.from)
+            if not fs.exists(entry.to) or
+               areDifferent(entry.from, entry.to)
+            then
+                fs.delete(entry.to)
+                requiredDiskSpace = requiredDiskSpace + fs.getSize(entry.from)
+            end
+        elseif entry.content then
+            if not fs.exists(entry.to) or
+               areDifferent(#entry.content, entry.to)
+            then
+                fs.delete(entry.to)
+                requiredDiskSpace = requiredDiskSpace + #entry.content
+            end
         end
-        fs.copy(file[2], file[1])
-    elseif fs.isDir(file[1]) then
-        error("Bad installation, " .. file[1] .. " is a folder.")
     end
 end
 
--- Install startup file if there isn't one, yet.
-if not fs.exists("/startup") then
-    local file = fs.open("/startup", "w")
-    file.write([[-- Skip if we already ran.
-if startup then
+if requiredDiskSpace > fs.getFreeSpace(diskPath) then
+    print("Not enough space on turtle. Please make some and try again.")
     return false
 end
 
--- Install custom API loader.
-os.loadAPI("apis/bapil")
-bapil.hijackOSAPI()
-
--- Load stacktrace API and install tpcall as replacement for pcall.
-assert(os.loadAPI("apis/stacktrace"))
-_G.pcall = stacktrace.tpcall
-
--- Load startup API and perform startup.
-assert(os.loadAPI("apis/startup"))
-return startup.run()]])
-    file.close()
+for folder, _ in pairs(folders) do fs.makeDir(folder) end
+for _, entry in ipairs(install) do
+    print(" > " .. entry.to)
+    if entry.from then
+        if not fs.exists(entry.to) then
+            fs.copy(entry.from, entry.to)
+        end
+    elseif entry.content then
+        if not fs.exists(entry.to) then
+            local file = fs.open(entry.to, "w")
+            file.write(entry.content)
+            file.close()
+        end
+    end
+    os.sleep(0.1)
 end
 
 -- Run local startup script.
-if not dofile("/startup") then
-    return false
-end
+if not dofile("/startup") then return false end
 
+-- The local startup file should have loaded our APIs.
 assert(startup, "Bad installation, startup API not loaded automatically.")
 
 -- Overwrite this program in case of updates (different file size).
 local jamFile = fs.combine(diskPath, "programs/jam")
 if not startup.isEnabled("jam") or
-   fs.getSize(startup.scriptPath("jam")) ~= fs.getSize(jamFile)
+   areDifferent(startup.scriptPath("jam"), jamFile)
 then
     startup.remove("jam")
     startup.addFile("jam", 20, jamFile)
-    startup.enable("jam")
     print("Done installing JAM, rebooting...")
     os.sleep(1)
     os.reboot()
-end]=], rsDiskSide))
-    file.close()
+end]=], rsDiskSide),
+         to = fs.combine(diskPath, "startup")}
+    }
+
+    -- Compute total disk space required and which folders we need to create.
+    local requiredDiskSpace, folders = 0, {}
+    for _, entry in ipairs(install) do
+        assert(not fs.exists(entry.to) or not fs.isDir(entry.to),
+            "Bad disk, folder in location " .. entry.to)
+        local folder = entry.to:sub(1, #entry.to - fs.getName(entry.to):len())
+        assert(not fs.exists(folder) or fs.isDir(folder),
+               "Bad disk, file in location " .. folder)
+        if not fs.exists(folder) and not folders[folder] then
+            requiredDiskSpace = requiredDiskSpace + 512
+            folders[folder] = true
+        end
+
+        if entry.from then
+            assert(fs.exists(entry.from) and not fs.isDir(entry.from),
+                "Bad setup, missing file " .. entry.from)
+            if not fs.exists(entry.to) or
+               private.areDifferent(entry.from, entry.to)
+            then
+                fs.delete(entry.to)
+                requiredDiskSpace = requiredDiskSpace + fs.getSize(entry.from)
+            end
+        elseif entry.content then
+            if not fs.exists(entry.to) or
+               private.areDifferent(#entry.content, entry.to)
+            then
+                fs.delete(entry.to)
+                requiredDiskSpace = requiredDiskSpace + #entry.content
+            end
+        end
+    end
+
+    print("Additional disk space required: " ..
+          math.ceil(requiredDiskSpace / 1024) .. "KB.")
+    if requiredDiskSpace > fs.getFreeSpace(diskPath) then
+        print("\nNot enough space on attached disk.\n")
+        if not private.formatDisk() then
+            -- nil causes restart.
+            return nil
+        end
+    end
+
+    for folder, _ in pairs(folders) do
+        fs.makeDir(folder)
+    end
+    for _, entry in ipairs(install) do
+        print(" > " .. entry.to)
+        if entry.from then
+            if not fs.exists(entry.to) then
+                fs.copy(entry.from, entry.to)
+            end
+        elseif entry.content then
+            if not fs.exists(entry.to) then
+                local file = fs.open(entry.to, "w")
+                file.write(entry.content)
+                file.close()
+            end
+        end
+        os.sleep(0.1)
+    end
 
     return jobCount, placeTorches, placeIgnored, haveIgnoreChest
 end
@@ -1365,36 +1450,66 @@ function private.prompt(yesKeys, noKeys)
 end
 
 --[[
-    Sends a message via WIFI if available.
-
-    @param the message category, i.e. the type of the message.
-    @param the actual message content.
+    Checks if two files are potentially different by comparing their file
+    sizes.
 ]]
-function private.sendMessage(category, message)
-    if private.noModem then
-        return
-    elseif not private.modem then
-        if peripheral.isPresent("right") and
-           peripheral.getType("right") == "modem"
-        then
-            private.modem = peripheral.wrap("right")
-        elseif peripheral.isPresent("left") and
-               peripheral.getType("left") == "modem"
-        then
-            private.modem = peripheral.wrap("left")
-        else
-            -- Don't try again.
-            private.noModem = true
-            return
-        end
+function private.areDifferent(file1, file2)
+    local s1 = type(file1) == "string" and fs.getSize(file1) or file1
+    local s2 = fs.getSize(file2)
+    if s1 == 512 or s2 == 512 then
+        return true
     end
-    local packet = {}
-    packet.source = os.getComputerID()
-    packet.sourceLabel = os.getComputerLabel()
-    packet.category = category
-    packet.message = message
-    private.modem.transmit(sendChannel, 0, textutils.serialize(packet))
+    s1 = type(file1) == "string" and s1 - fs.getName(file1):len() or s1
+    s2 = s2 - fs.getName(file2):len()
+    return s1 ~= s2
 end
+
+--[[
+    Formats the attached disk drive.
+]]
+function private.formatDisk()
+    if not disk.isPresent(rsDiskSide) then
+        return true
+    end
+    local diskPath = disk.getMountPath(rsDiskSide)
+    if #fs.list(diskPath) < 1 then
+        return true
+    end
+    print("This will format the disk in the      \n" ..
+          "attached disk drive. All data will be \n" ..
+          "irretrievably lost.                 \n\n" ..
+          "Are you sure? [Y/n]")
+    if not private.prompt() then
+        print("Aborting.")
+        -- Eat key event so it doesn't propagate into the shell.
+        os.sleep(0.1)
+        return false
+    end
+    print("Formatting disk...")
+    for _, file in pairs(fs.list(diskPath)) do
+        local path = fs.combine(diskPath, file)
+        print(" > " .. file .. (fs.isDir(path) and "/*" or ""))
+        fs.delete(path)
+        os.sleep(0.1)
+    end
+    return true
+end
+
+--[[
+    Resets the disk and program and removes our startup script.
+]]
+function private.reset()
+    if not private.formatDisk() then
+        return false
+    end
+    program:reset()
+    startup.remove("jam")
+    return true
+end
+
+-------------------------------------------------------------------------------
+-- Job position related stuff                                                --
+-------------------------------------------------------------------------------
 
 --[[
     Utility function to determine how many holes we can dig so that our spiral
@@ -1450,6 +1565,23 @@ function private.computeCoordinates(n)
     end
     -- Then map it to our knights move grid.
     return x * 2 - y, y * 2 + x
+end
+
+--[[
+    Computes how much fuel we should stock up on for making sure we can safely
+    travel to the specified dig site, dig it up, and come back.
+]]
+function private.computeExpeditionCost(job)
+    local x, z = private.computeCoordinates(job)
+    -- Start at home, move to the job location (layer enforced by function).
+    local path = private.generatePath(0, 0, 0, x, -1, z, "job")
+     -- Digging faaar down, worst case scenario.
+    table.insert(path, {x = x, y = -255, z = z})
+    -- Append our way back home (again, layer enforced by generatePath()).
+    for _, point in ipairs(private.generatePath(x, -1, z, 0, 0, 0, "home")) do
+        table.insert(path, point)
+    end
+    return private.computeFuelNeeded(path)
 end
 
 --[[
@@ -1513,61 +1645,40 @@ function private.generatePath(sx, sy, sz, tx, ty, tz, target)
     }
 end
 
---[[
-    Computes how much fuel we should stock up on for making sure we can safely
-    travel to the specified dig site, dig it up, and come back.
-]]
-function private.computeExpeditionCost(job)
-    local x, z = private.computeCoordinates(job)
-    -- Start at home, move to the job location (layer enforced by function).
-    local path = private.generatePath(0, 0, 0, x, -1, z, "job")
-     -- Digging faaar down, worst case scenario.
-    table.insert(path, {x = x, y = -255, z = z})
-    -- Append our way back home (again, layer enforced by generatePath()).
-    for _, point in ipairs(private.generatePath(x, -1, z, 0, 0, 0, "home")) do
-        table.insert(path, point)
-    end
-    return private.computeFuelNeeded(path)
-end
+-------------------------------------------------------------------------------
+-- Working turtle stuff                                                      --
+-------------------------------------------------------------------------------
 
 --[[
-    Checks if all inventory slots are occupied.
-]]
-function private.isInventoryFull()
-    for slot = 1, 16 do
-        if turtle.getItemCount(slot) == 0 then
-            return false
-        end
-    end
-    return true
-end
+    Sends a message via WIFI if available.
 
---[[
-    Checks if a block in front of us should be ignored.
+    @param the message category, i.e. the type of the message.
+    @param the actual message content.
 ]]
-function private.shouldIgnore(ignoreCount, detect, compare)
-    if not detect() then
-        return true
-    end
-    for slot = 1, ignoreCount do
-        turtle.select(slot)
-        if turtle.compare() then
-            return slot
+function private.sendMessage(category, message)
+    if private.noModem then
+        return
+    elseif not private.modem then
+        if peripheral.isPresent("right") and
+           peripheral.getType("right") == "modem"
+        then
+            private.modem = peripheral.wrap("right")
+        elseif peripheral.isPresent("left") and
+               peripheral.getType("left") == "modem"
+        then
+            private.modem = peripheral.wrap("left")
+        else
+            -- Don't try again.
+            private.noModem = true
+            return
         end
     end
-    return false
-end
-
---[[
-    Tries to empty out any inventories and then dig up the block.
-]]
-function private.suckAndDig(suck, dig)
-    while not private.isInventoryFull() do
-        if not suck() then
-            return dig()
-        end
-    end
-    return false
+    local packet = {}
+    packet.source = os.getComputerID()
+    packet.sourceLabel = os.getComputerLabel()
+    packet.category = category
+    packet.message = message
+    private.modem.transmit(sendChannel, 0, textutils.serialize(packet))
 end
 
 --[[
@@ -1609,6 +1720,46 @@ function private.rebuildIgnoreCache(ignoreCount, ignoredLookup, placeTorches)
     end
 
     return ignoredLookup, placeIgnoredRequired
+end
+
+--[[
+    Checks if all inventory slots are occupied.
+]]
+function private.isInventoryFull()
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) == 0 then
+            return false
+        end
+    end
+    return true
+end
+
+--[[
+    Checks if a block in front of us should be ignored.
+]]
+function private.shouldIgnore(ignoreCount, detect, compare)
+    if not detect() then
+        return true
+    end
+    for slot = 1, ignoreCount do
+        turtle.select(slot)
+        if turtle.compare() then
+            return slot
+        end
+    end
+    return false
+end
+
+--[[
+    Tries to empty out any inventories and then dig up the block.
+]]
+function private.suckAndDig(suck, dig)
+    while not private.isInventoryFull() do
+        if not suck() then
+            return dig()
+        end
+    end
+    return false
 end
 
 --[[
@@ -1763,35 +1914,22 @@ assert(type(rsDiskSide) == "string" and rsDiskSide ~= "",
 -- Command line argument parsing.
 local args = {...}
 if args[1] == "reset" then
-    if disk.isPresent(rsDiskSide) then
-        local diskPath = disk.getMountPath(rsDiskSide)
-        if #fs.list(diskPath) > 0 then
-            term.clear()
-            term.setCursorPos(1, 1)
-            print("This will format the disk in the      \n" ..
-                  "attached disk drive. All data will be \n" ..
-                  "irretrievably lost.                 \n\n" ..
-                  "Are you sure? [Y/n]")
-            if private.prompt() then
-                print("Formatting disk...")
-                for _, file in pairs(fs.list(diskPath)) do
-                    local path = fs.combine(diskPath, file)
-                    print(" > " .. file .. (fs.isDir(path) and "/*" or ""))
-                    fs.delete(path)
-                    os.sleep(0.1)
-                end
-            else
-                print("Aborting.")
-                -- Eat key event so it doesn't propagate into the shell.
-                os.sleep(0.1)
-                return false
-            end
-        end
+    return private.reset()
+elseif args[1] == "install" then
+    if not private.reset() then
+        return false
     end
-
-    program:reset()
-    startup.disable("jam")
-    return true
+elseif #args > 0 then
+    print("Usage: jam [command]")
+    print("Commands:")
+    print("  reset   - resets the program state")
+    print("            and formats the disk.")
+    print("  install - resets and then runs JAM.")
+    print()
+    print("If no command is given, JAM is run")
+    print("normally, either running the wizard")
+    print("or resuming from a previous state.")
+    return false
 end
 
 -- Run our program.

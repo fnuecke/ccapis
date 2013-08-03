@@ -44,7 +44,7 @@ local state, private
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.0"
+version = "1.1"
 
 --[[
     Sets the redstone output on the specified side.
@@ -187,6 +187,9 @@ function private.load()
 
     -- Parse saved data.
     data = textutils.unserialize(data)
+    if type(data) ~= "table" then
+        data = {}
+    end
 
     -- Restore outputs. Do this using the native functions to avoid saving
     -- unnecessarily. If we have analog output, it's enough to restore that.

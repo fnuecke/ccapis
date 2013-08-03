@@ -54,7 +54,7 @@ local private
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.1"
+version = "1.2"
 
 --[[
     Adds a new startup script with the specified priority by copying the
@@ -105,7 +105,9 @@ function addString(name, priority, code)
         return false, "script with that name already exists"
     end
 
-    local file = fs.open(fs.combine(startupPath, priority .. "_" .. name), "w")
+    local path = fs.combine(startupPath, priority .. "_" .. name)
+    local file = assert(fs.open(path, "w"),
+        "Could not open file '" .. path .. "' for writing.")
     file.write(code)
     file.close()
     return true
@@ -162,7 +164,10 @@ function enable(name)
         local priority = getPriority(name)
         local pathEnabled = fs.combine(startupPath, priority .. "_" .. name)
         local pathDisabled = pathEnabled .. "." .. disabledPostfix
-        fs.move(pathDisabled, pathEnabled)
+        if fs.exists(pathEnabled) then
+            fs.delete(pathEnabled)
+        end
+        private.checkedMove(pathDisabled, pathEnabled)
     end
     return true
 end
@@ -184,7 +189,7 @@ function disable(name)
         if fs.exists(pathDisabled) then
             fs.delete(pathDisabled)
         end
-        fs.move(pathEnabled, pathDisabled)
+        private.checkedMove(pathEnabled, pathDisabled)
     end
     return true
 end
@@ -235,7 +240,7 @@ function setPriority(name, priority)
         oldPath = oldPath .. "." .. disabledPostfix
         newPath = newPath .. "." .. disabledPostfix
     end
-    fs.move(oldPath, newPath)
+    private.checkedMove(oldPath, newPath)
     return true
 end
 
@@ -417,6 +422,19 @@ function private.shouldRun(path)
         return path:sub(-disabledPostfix:len()) ~= disabledPostfix
     end
     return true
+end
+
+--[[
+    Performs a fs.move() but checks if there's enough disk space first and
+    throws a more meaningful error than "could not copy file" if not.
+
+    @param from the path to move the file from.
+    @param to the path to move the file to.
+]]
+function private.checkedMove(from, to)
+    local toSize = math.max(512, fs.getSize(from) + fs.getName(to):len())
+    assert(fs.getFreeSpace(to) >= toSize, "Out of disk space!")
+    fs.move(from, to)
 end
 
 --[[

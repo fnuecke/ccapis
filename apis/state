@@ -233,7 +233,7 @@ end
     serialized math.huge values...
 ]]
 function private.unserialize(data)
-    local result, reason = loadstring("return " .. data, filename)
+    local result, reason = loadstring("return " .. (data or "nil"), filename)
     if not result then
         return data
     else

@@ -842,7 +842,7 @@ end)
     log:info("That's it, I'm going to end it right here. It was a nice life.")
     private.sendMessage("state", "end")
 
-    repeat until lama.moveto(1, 2, endSlot, math.huge, true)
+    repeat until lama.moveto(1, 2, endSlot, 0, math.huge, true)
     startup.disable("jam")
     switchTo(nil)
 end)

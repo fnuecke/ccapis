@@ -396,6 +396,7 @@ end)
         while lama.getY() > resumeDigDown do
             lama.down(math.huge, true)
         end
+        resumeDigDown = nil
     end
 
     repeat

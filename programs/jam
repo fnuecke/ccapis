@@ -246,12 +246,11 @@ end)
     log:info("Going home to deliver the goods.")
     private.sendMessage("state", "goto_drop")
 
-    -- Player being invulnerable can block this, so we have to keep trying.
     private.select(1)
-    repeat
-        local x, y, z = lama.get()
-        local path = private.generatePath(x, y, z, 0, 0, 0, "home")
-    until lama.navigate(path, math.huge, true)
+    local x, y, z = lama.get()
+    local path = private.generatePath(x, y, z, 0, 0, 0, "home")
+    assert(lama.navigate(path, math.huge, true),
+        "Unexpected unbreakable block.")
     switchTo("drop")
 end)
 
@@ -369,12 +368,11 @@ end)
     log:info("On my way to my workplace @ (%d, %d)!", tx, tz)
     private.sendMessage("state", "goto_job")
 
-    -- Player being invulnerable can block this, so we have to keep trying.
     private.select(1)
-    repeat
-        local x, y, z = lama.get()
-        local path = private.generatePath(x, y, z, tx, jobLevel, tz, "job")
-    until lama.navigate(path, math.huge, true, true)
+    local x, y, z = lama.get()
+    local path = private.generatePath(x, y, z, tx, jobLevel, tz, "job")
+    assert(lama.navigate(path, math.huge, true, true),
+        "Unexpected unbreakable block.")
 
     if resumeDigUp then
         switchTo("dig_up")
@@ -430,13 +428,7 @@ end)
         -- block before we move.
         local couldMove = false
         if brokeStuff or not turtle.detectDown() then
-            -- The only two possibilities for a move with infinite tries to
-            -- fail is because of an indestructible block (bedrock) or an
-            -- invulnerable entity (player). If it's the second, we wait.
-            repeat
-                local whyNot
-                couldMove, whyNot = lama.down(math.huge, true)
-            until couldMove or whyNot ~= lama.reason.invulnerable_entity
+            couldMove = lama.down(math.huge, true)
         end
     until not brokeStuff and not couldMove
 
@@ -629,9 +621,8 @@ end)
             return switchTo("goto_drop")
         end
 
-        -- Can only be blocked by a player, so we just try until it works.
         private.select(1)
-        repeat until lama.up(math.huge, true)
+        assert(lama.up(math.huge, true), "Unexpected unbreakable block.")
     end
 
     groundLevel = nil
@@ -682,11 +673,10 @@ end)
     log:info("Moving out of the way, I'm just useless junk anyway.")
     private.sendMessage("state", "goto_end")
 
-    -- Player being invulnerable can block this, so we have to keep trying.
-    repeat
-        local x, y, z = lama.get()
-        local path = private.generatePath(x, y, z, 0, 2, endSlot, "end")
-    until lama.navigate(path, math.huge, true)
+    local x, y, z = lama.get()
+    local path = private.generatePath(x, y, z, 0, 2, endSlot, "end")
+    assert(lama.navigate(path, math.huge, true),
+        "Unexpected unbreakable block.")
     switchTo("end")
 end)
 
@@ -697,7 +687,8 @@ end)
     log:info("That's it, I'm going to end it right here. It was a nice life.")
     private.sendMessage("state", "end")
 
-    repeat until lama.moveto(1, 2, endSlot, lama.side.north, math.huge, true)
+    assert(lama.moveto(1, 2, endSlot, lama.side.north, math.huge, true),
+        "Unexpected unbreakable block.")
     startup.disable("jam")
     switchTo(nil)
 end)

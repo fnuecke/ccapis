@@ -88,19 +88,20 @@ local torchSide = lama.side.right
 local diskSide = lama.side.back
 
 -------------------------------------------------------------------------------
--- Internal variables / constants                                            --
+-- Internal variables / constants. DO NOT CHANGE THESE.                      --
 -------------------------------------------------------------------------------
-
--- Do not change the next two variables, lest they interfere with the interval
--- of blocks to ignore! They is just here to make the code more readable (no
--- magic numbers all over the place.)
-
--- A slot that we can assume to be empty, used for temporary stuff, in
--- particular when refueling or picking up torches.
-local tempSlot = 15
 
 -- The slot number in which we keep our torches.
 local torchSlot = 16
+
+-- The relative level at which to move away from the dock, towards the holes.
+local awayLevel = 1
+
+-- The relative level at which to move back from the holes, towards the dock.
+local backLevel = -1
+
+-- Relative level at which to start digging.
+local jobLevel = -2
 
 -- Same as diskSide but using redstone.getSides() constants (for disk API).
 local rsDiskSide = ({[lama.side.forward] = "front",
@@ -372,7 +373,7 @@ end)
     private.select(1)
     repeat
         local x, y, z = lama.get()
-        local path = private.generatePath(x, y, z, tx, -1, tz, "job")
+        local path = private.generatePath(x, y, z, tx, jobLevel, tz, "job")
     until lama.navigate(path, math.huge, true, true)
 
     if resumeDigUp then
@@ -439,11 +440,7 @@ end)
         end
     until not brokeStuff and not couldMove
 
-    -- TODO *may* fail when hole magically fills up while at home. Simply
-    -- don't sort when done testing.
-    assert(not private.isInventoryFull())
-
-    switchTo("sort_ignore")
+    switchTo("rebuild_ignore_lookup")
 end)
 
 --[[
@@ -451,101 +448,48 @@ end)
     frequently encountered ones are at the lower inventory positions (for
     faster early exists when comparing).
 ]]
-:add("sort_ignore", function()
-    log:info("Sorting blocks to ignore for improved lookup speed.")
-    private.sendMessage("state", "sort_ignore")
+:add("rebuild_ignore_lookup", function()
+    if placeIgnored and groundLevel then
+        log:info("Checking for overflow of ignorance.")
+        private.sendMessage("state", "rebuild_ignore_lookup")
 
-    -- See if there's anything to sort at all.
-    if ignoreCount > 1 then
-        -- If we were interrupted while swapping items, restore our continuous
-        -- list of blocks to ignore, then start over.
-        while undo and #undo > 0 do
-            local swap = table.remove(undo)
-            private.select(swap[1])
-            turtle.transferTo(swap[2])
-            save()
-        end
-        undo = nil
-        save()
-
-        -- Get the total number of samples we got of the block type in that
-        -- slot, based on what we've seen across our active time.
-        local function getCount(slot)
-            return ignoreSamples and ignoreSamples[slot] or 0
-        end
-
-        -- Undo logic: we build a list of reverse inventory transfers. This
-        -- is fine because even if a transfer wasn't successful across the
-        -- reboot, the reverse operation simply won't do anything at all.
-        local function pushUndo(slotA, slotB)
-            undo = undo or {}
-            table.insert(undo, {slotA, slotB})
-            save()
-        end
-
-        -- Swaps two slots in the inventory, while keeping an undo log to
-        -- restore our state if we're shut down while we're at it (to avoid
-        -- getting our list with additional samples getting out of sync).
+        -- Swaps two slots in the inventory.
         local function swap(slotA, slotB)
-            -- If the slots are identical there's nothing to do, we'd just move
-            -- the object to our temp slot and back again.
-            if getCount(slotA) == getCount(slotB) then
+            if slotA == slotB then
                 return
             end
 
-            -- Happy rotating that can get terribly interrupted!
-            private.select(slotA)
-            pushUndo(tempSlot, slotA)
-            turtle.transferTo(tempSlot)
-            private.select(slotB)
-            pushUndo(slotA, slotB)
-            turtle.transferTo(slotA)
-            private.select(tempSlot)
-            pushUndo(slotB, slotA)
-            turtle.transferTo(slotB)
-
-            -- We're done! Clear our undo log and update the order of our
-            -- sample list.
-            undo = nil
-            if ignoreSamples then
-                ignoreSamples[slotA], ignoreSamples[slotB] =
-                    ignoreSamples[slotB], ignoreSamples[slotA]
-            end
-            save()
-        end
-
-        -- Get the list of entry indices so that we can sort it based on the
-        -- sample counts for the respective block types.
-        local entries = {}
-        for slot = 1, ignoreCount do
-            table.insert(entries, slot)
-        end
-        table.sort(entries, function(a, b)
-                                return getCount(a) > getCount(b)
-                            end)
-
-        -- Reorder the inventory so that the block types with more samples are
-        -- closer to the start of the inventory.
-        for target = 1, #entries do
-            local source = entries[target]
-            swap(source, target)
-            -- Update entry for the element we replaced (or rather: set its
-            -- target entry to its new location).
-            for i = 1, #entries do
-                if entries[i] == target then
-                    entries[i] = source
+            -- Find an empty slot to work with as a temporary buffer.
+            local slotTmp
+            for slot = ignoreCount + 1, 16 do
+                if turtle.getItemCount(slot) == 0 then
+                    slotTmp = slot
                     break
                 end
             end
-        end
-    end
+            if not slotTmp then
+                return false
+            end
 
-    -- Build a look-up table of slots that also contain ignored items in case
-    -- we dug up so many we had an overflow. This is used for quickly knowing
-    -- which slot to select for placing ignored blocks while moving up.
-    if placeIgnored and groundLevel then
-        local count = 0
-        for slot = ignoreCount + 1, 16 do
+            private.select(slotA)
+            turtle.transferTo(slotTmp)
+
+            private.select(slotB)
+            turtle.transferTo(slotA)
+
+            private.select(slotTmp)
+            turtle.transferTo(slotB)
+
+            return true
+        end
+
+        -- Build a look-up table of slots that also contain ignored items in
+        -- case we dug up so many we had an overflow. This is used for to avoid
+        -- having to check the complete inventory when placing ignored blocks
+        -- while moving up (which would be horribly slow).
+        local count, nextSlot = 0, 16
+        local lookup = {}
+        for slot = 16, ignoreCount + 1, -1 do
             if turtle.getItemCount(slot) > 0 and
                not placeTorches or slot ~= torchSlot
             then
@@ -553,13 +497,29 @@ end)
                 private.select(slot)
                 for ignoreSlot = 1, ignoreCount do
                     if turtle.compareTo(ignoreSlot) then
+                        -- This is an ignored block. Try to push it to the back
+                        -- of the inventory, to avoid ripping holes into the
+                        -- inventory list when we deplete the stack, which can
+                        -- lead to getting two stacks of the same item type of
+                        -- dug up blocks (e.g.: coal at 5, additional cobble at
+                        -- 4, cobble depletes, new coal found, goes to 4 ->
+                        -- both 4 and 5 contain coal, where if cobble were
+                        -- behind the coal they'd be merged (assuming what coal
+                        -- we had wasn't a full stack already, of course).
                         count = count + turtle.getItemCount(slot)
-                        ignoredLookup = ignoredLookup or {}
-                        table.insert(ignoredLookup, slot)
+                        if swap(slot, nextSlot) then
+                            table.insert(lookup, 1, nextSlot)
+                            nextSlot = nextSlot - 1
+                        else
+                            table.insert(lookup, 1, slot)
+                        end
                         break
                     end
                 end
             end
+        end
+        if #lookup > 0 then
+            ignoredLookup = lookup
         end
         -- Add the counts for the excess items in the stacks of the reference
         -- slots (we only need to keep one of these).
@@ -656,8 +616,8 @@ end)
             save()
         end
 
-        -- Move up until we're back at our starting location (at level -1).
-        if lama.getY() >= -1 then
+        -- Move up until we're back at our starting location.
+        if lama.getY() >= jobLevel then
             break
         end
 
@@ -1239,17 +1199,13 @@ function private.setupIgnoredBlocks(placeTorches, placeIgnored)
         private.prompt({keys.enter}, {})
         -- Restarts the state.
         return nil
-    elseif occupied >= tempSlot or
-           (placeTorches and occupied >= torchSlot)
-    then
+    elseif placeTorches and occupied >= torchSlot then
         print("Unless you messed with the code this \n" ..
               "should not happen: the inventory     \n" ..
               "range used for blocks to ignore      \n" ..
-              "intersects with either the torch or  \n" ..
-              "or our temporary working slot. You'll\n" ..
+              "intersects with the torch. You'll    \n" ..
               "have to specify less than " ..
-              math.min(tempSlot, torchSlot) ..
-              " block   \n" ..
+              (torchSlot - 1) .. " block   \n" ..
               "types. Press [Enter] to try again... \n")
         private.prompt({keys.enter}, {})
         -- Restarts the state.
@@ -1304,14 +1260,14 @@ function private.setupIgnoredBlocksFromIgnoreChest()
 
     -- Suck as often as we can. If there's more, silently ignore it.
     private.select(1)
-    for slot = 1, tempSlot - 1 do
+    for slot = 1, 15 do
         if not turtle.suck() then
             -- Stop if there's nothing else in there.
             break
         end
     end
     -- Put everything except one item back.
-    for slot = 1, tempSlot - 1 do
+    for slot = 1, 15 do
         if turtle.getItemCount(slot) > 0 then
             private.select(slot)
             turtle.drop(turtle.getItemCount(slot) - 1)
@@ -1532,11 +1488,12 @@ end
 function private.computeExpeditionCost(job)
     local x, z = private.computeCoordinates(job)
     -- Start at home, move to the job location (layer enforced by function).
-    local path = private.generatePath(0, 0, 0, x, -1, z, "job")
+    local path = private.generatePath(0, 0, 0, x, jobLevel, z, "job")
      -- Digging faaar down, worst case scenario.
     table.insert(path, {x = x, y = -255, z = z})
-    -- Append our way back home (again, layer enforced by generatePath()).
-    for _, point in ipairs(private.generatePath(x, -1, z, 0, 0, 0, "home")) do
+    -- Append our way back home (again, move layer enforced by generatePath()).
+    local pathBack = private.generatePath(x, jobLevel, z, 0, 0, 0, "home")
+    for _, point in ipairs(pathBack) do
         table.insert(path, point)
     end
     return private.computeFuelNeeded(path)
@@ -1583,11 +1540,11 @@ function private.generatePath(sx, sy, sz, tx, ty, tz, target)
     end
     local layer
     if target == "home" then
-        layer = -1
+        layer = backLevel
     elseif target == "end" then
         layer = 2
     elseif target == "job" then
-        layer = 1
+        layer = awayLevel
     else
         error("'target' is invalid")
     end
@@ -1703,24 +1660,6 @@ function private.select(slot)
 end
 
 --[[
-    Checks if a block in front of us should be ignored.
-]]
-function private.shouldIgnore(ignoreCount, detect, compare)
-    detect = detect or turtle.detect
-    if not detect() then
-        return true
-    end
-    compare = compare or turtle.compare
-    for slot = 1, ignoreCount do
-        private.select(slot)
-        if turtle.compare() then
-            return slot
-        end
-    end
-    return false
-end
-
---[[
     Tries to empty out any inventories and then dig up the block.
 ]]
 function private.suckAndDig(suck, dig)
@@ -1736,6 +1675,29 @@ function private.suckAndDig(suck, dig)
             return result, count ~= private.itemCount()
         end
     end
+end
+
+--[[
+    Sorts the lookup table for ignore slots so that we iterate them in the
+    order of their frequencies.
+
+    This takes some measures to avoid rebuilding the sort order
+]]
+function private.computeIgnoreOrder(ignoreCount, ignoreSamples)
+    if not private.orderedIgnoreSlots then
+        -- Re-use the table to go easy on the GC.
+        private.orderedIgnoreSlots = {}
+        for i = 1, ignoreCount do
+            table.insert(private.orderedIgnoreSlots, i)
+        end
+    end
+    -- This is done quite often, but since this table will be really small it
+    -- doesn't matter.
+    table.sort(private.orderedIgnoreSlots,
+        function(slotA, slotB)
+            return ignoreSamples[slotA] > ignoreSamples[slotB]
+        end)
+    return private.orderedIgnoreSlots
 end
 
 function private.digLevel(ignoreCount, ignoreSamples, goingDown)
@@ -1757,21 +1719,36 @@ function private.digLevel(ignoreCount, ignoreSamples, goingDown)
             [false] = {lama.side.west, lama.side.south}
         }
     })[goingDown][lama.getY() % 2 == 0]
+
+    -- Get the order in which to check the ignored items.
+    local order = private.computeIgnoreOrder(ignoreCount, ignoreSamples)
+
     local droppedChanged = false
     for _, side in ipairs(sides) do
         lama.turn(side)
-        local ignored = private.shouldIgnore(ignoreCount)
-        if not ignored then
-            private.select(ignoreCount + 1)
-            if private.suckAndDig() == nil then
-                -- Only returns nil if the inventory is full. Early exit in
-                -- that case to potentially avoid an unnecessary turn.
-                break
+        if turtle.detect() then
+            -- There's something there! Check if we should ignore it.
+            local ignored = false
+            for i = 1, ignoreCount do
+                local slot = order[i]
+                private.select(slot)
+                if turtle.compare() then
+                    -- Yep, ignore this one. Update our sampling.
+                    ignored = true
+                    ignoreSamples = ignoreSamples or {}
+                    ignoreSamples[slot] = (ignoreSamples[slot] or 0) + 1
+                    droppedChanged = true
+                    break
+                end
             end
-        elseif type(ignored) == "number" then
-            ignoreSamples = ignoreSamples or {}
-            ignoreSamples[ignored] = (ignoreSamples[ignored] or 0) + 1
-            droppedChanged = true
+            if not ignored then
+                private.select(ignoreCount + 1)
+                if private.suckAndDig() == nil then
+                    -- Only returns nil if the inventory is full. Early exit in
+                    -- that case to potentially avoid an unnecessary turn.
+                    break
+                end
+            end
         end
     end
     return droppedChanged and ignoreSamples or nil
@@ -1803,12 +1780,13 @@ end
     Refuels the turtle to the specified fuel level. This keeps retrying until
     it succeeds.
 ]]
-function private.refuel(needed)
+function private.refuel(needed, ignoreCount)
     -- Don't spam the log. We DO spam the WIFI, though, since that can fail.
     local didLogNoFuel = false
+    local fuelSlot = ignoreCount + 1
     while turtle.getFuelLevel() < needed do
-        private.select(tempSlot)
-        if turtle.getItemCount(tempSlot) == 0 then
+        private.select(fuelSlot)
+        if turtle.getItemCount(fuelSlot) == 0 then
             lama.turn(fuelSide)
             if not turtle.suck() then
                 private.sendMessage("fuel", "We're all out fuel!")
@@ -1819,27 +1797,28 @@ function private.refuel(needed)
                 os.sleep(5)
             end
         else
-            while turtle.getItemCount(tempSlot) > 0 and
+            while turtle.getItemCount(fuelSlot) > 0 and
                   turtle.getFuelLevel() < needed
             do
                 if not lama.refuel(1) then
-                    private.drop(tempSlot)
+                    private.drop(fuelSlot)
                     break
                 end
             end
             turtle.drop()
         end
     end
-    private.drop(tempSlot)
+    private.drop(fuelSlot)
 end
 
 --[[
     Restock on torches to get a full stack. This keeps retrying until it
     succeeds.
 ]]
-function private.restockTorches()
+function private.restockTorches(ignoreCount)
     -- Don't spam the log. We DO spam the WIFI, though, since that can fail.
     local didLogNoTorches = false
+    local tempSlot = ignoreCount + 1
     while turtle.getItemCount(torchSlot) < (256 / torchFrequency) do
         -- Select an empty slot because we cannot control how much we pull,
         -- then replenish our actual torch stack from that and drop the rest.

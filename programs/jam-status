@@ -83,7 +83,10 @@ local jobData
 ]]
 local function updateDataThread()
     while true do
-        jobData = jobData or getJobData()
+        local newJobData = getJobData()
+        if newJobData then
+            jobData = newJobData
+        end
         os.sleep(1)
     end
 end

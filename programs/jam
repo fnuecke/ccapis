@@ -345,7 +345,7 @@ end)
 :add("refuel_job", function()
     log:info("Getting enough fuel to make it to our job and back.")
     private.sendMessage("state", "refuel_job")
-    private.refuel(private.computeExpeditionCost(job))
+    private.refuel(private.computeExpeditionCost(job), ignoreCount)
     switchTo("restock_torches")
 end)
 
@@ -356,7 +356,7 @@ end)
     if placeTorches then
         log:info("Picking up some torches to bring light into the dark.")
         private.sendMessage("state", "restock_torches")
-        private.restockTorches()
+        private.restockTorches(ignoreCount)
     end
     switchTo("goto_job")
 end)
@@ -584,20 +584,21 @@ end)
                 end
                 -- If no-one stole items from our inventory and we didn't
                 -- miscalculate we should always have a slot by now.
-                -- TODO simply don't place after done testing
-                assert(slot)
+                if slot then
+                    private.select(slot)
+                    turtle.placeDown()
 
-                private.select(slot)
-                turtle.placeDown()
-
-                if ignoredLookup then
-                    if turtle.getItemCount(slot) == 0 then
-                        table.remove(ignoredLookup)
+                    if ignoredLookup then
+                        if turtle.getItemCount(slot) == 0 then
+                            table.remove(ignoredLookup)
+                        end
+                        if #ignoredLookup == 0 then
+                            ignoredLookup = nil
+                        end
+                        save()
                     end
-                    if #ignoredLookup == 0 then
-                        ignoredLookup = nil
-                    end
-                    save()
+                else
+                    groundLevel = nil
                 end
             elseif placeTorches and lama.getY() % torchFrequency == 0 then
                 private.select(torchSlot)
@@ -656,7 +657,7 @@ end)
         {x = 0, y = 2, z = endSlot},
         {x = 1, y = 2, z = endSlot}
     }
-    private.refuel(private.computeFuelNeeded(path))
+    private.refuel(private.computeFuelNeeded(path), ignoreCount)
     switchTo("clear_inventory")
 end)
 
@@ -1693,10 +1694,12 @@ function private.computeIgnoreOrder(ignoreCount, ignoreSamples)
     end
     -- This is done quite often, but since this table will be really small it
     -- doesn't matter.
-    table.sort(private.orderedIgnoreSlots,
-        function(slotA, slotB)
-            return ignoreSamples[slotA] > ignoreSamples[slotB]
-        end)
+    if ignoreSamples then
+        local function comparator(slotA, slotB)
+            return (ignoreSamples[slotA] or 0) > (ignoreSamples[slotB] or 0)
+        end
+        table.sort(private.orderedIgnoreSlots, comparator)
+    end
     return private.orderedIgnoreSlots
 end
 

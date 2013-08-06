@@ -1,0 +1,260 @@
+--[[
+    JAM - Just Another Miner - 2013 Sangar
+
+    This program is licensed under the MIT license.
+    http://opensource.org/licenses/mit-license.php
+
+    This program is intended to be run on a computer attached to a disk drive
+    used in a JAM quarry. It will print some statistics on the quarry, such as
+    progress, run time and information on the currently being worked on jobs.
+    If a monitor is attached to the computer it will print a map with the job
+    locations and an indicator of that job's status ('-' = to do, 'X' = being
+    worked on, '+' = done).
+]]
+
+--[[
+    Check for a disk with the jobs file on it and read it if possible.
+
+    @return job data if successful; nil otherwise.
+]]
+local function getJobData()
+    local diskPath, jobFile
+    for _, name in ipairs(peripheral.getNames()) do
+        if disk.isPresent(name) then
+            diskPath = disk.getMountPath(name)
+            if diskPath then
+                jobFile = fs.combine(diskPath, ".jobs")
+                if fs.exists(jobFile) and not fs.isDir(jobFile) then
+                    break
+                end
+                diskPath = nil
+            end
+        end
+    end
+    local jobData
+    if diskPath then
+        local f = fs.open(jobFile, "r")
+        if f then
+            jobData = textutils.unserialize(f.readAll())
+            f.close()
+        end
+    end
+    return jobData
+end
+
+--[[
+    Computes the actual x and y coordinates of the nth hole.
+
+    @param n the number of the hole to compute the coordinates for.
+    @return (x, y) being heightless the coordinates of the nth hole.
+]]
+local function computeCoordinates(n)
+    -- Adjust to zero indexed system.
+    n = n - 1
+    -- If we're at the origin we can return right away. In fact, we should,
+    -- since we'd get a division by zero in the following...
+    if n < 1 then
+        return 0, 0
+    end
+    -- Compute the coordinates on a plain old rectangular spiral, first.
+    local shell = math.floor((math.sqrt(n) + 1) / 2)
+    local tmp = (2 * shell - 1); tmp = tmp * tmp
+    local leg = math.floor((n - tmp) / (2 * shell))
+    local element = (n - tmp) - (2 * shell * leg) - shell + 1
+    local x, y
+    if leg == 0 then
+        x, y = shell, element
+    elseif leg == 1 then
+        x, y = -element, shell
+    elseif leg == 2 then
+        x, y = -shell, -element
+    else
+        x, y = element, -shell
+    end
+    -- Then map it to our knights move grid.
+    return x * 2 - y, y * 2 + x
+end
+
+-- Global job data variable, updated in data updater thread.
+local jobData
+
+--[[
+    Thread used to regularly poll the jobs file and fetch new data.
+]]
+local function updateDataThread()
+    while true do
+        jobData = jobData or getJobData()
+        os.sleep(1)
+    end
+end
+
+--[[
+    This function prints status information to the terminal.
+]]
+local function updateText()
+    term.clear()
+    term.setCursorPos(1, 1)
+
+    local activeJobCount = 0
+    if jobData.activeJobs then
+        for _, _ in pairs(jobData.activeJobs) do
+            activeJobCount = activeJobCount + 1
+        end
+    end
+    local finishedJobCount = (jobData.nextJob or 1) - 1 - activeJobCount
+    local totalJobCount = jobData.totalJobs
+    local progress = math.floor(finishedJobCount / totalJobCount * 100)
+
+    local averageJobDuration = 0
+    if jobData.jobDurations then
+        for _, duration in ipairs(jobData.jobDurations) do
+            averageJobDuration = averageJobDuration + duration
+        end
+        averageJobDuration = averageJobDuration / #jobData.jobDurations
+    end
+    local averageJobDurationInMinutes
+    if averageJobDuration == 0 then
+        averageJobDurationInMinutes = "N/A"
+    else
+        averageJobDurationInMinutes = math.ceil(averageJobDuration / 1200) .. "m"
+    end
+
+    local now = (os.day() * 24 + os.time()) * 1000
+    local startTime = jobData.startTime or now
+    local stopTime = jobData.stopTime or now
+    local runTime
+    do
+        local seconds = math.floor((stopTime - startTime) / 20)
+        if seconds < 60 then
+            runTime = seconds .. "s"
+        else
+            local minutes = math.floor(seconds / 60)
+            seconds = seconds % 60
+            if minutes < 60 then
+                runTime = string.format("%02d:%02d", minutes, seconds)
+            else
+                local hours = math.floor(minutes / 60)
+                minutes = minutes % 60
+                runTime = string.format("%d:%02d:%02d", hours, minutes, seconds)
+            end
+        end
+    end
+
+    print(string.format("Jobs: %d/%d (%d%%) / Active: %d / Average: %s",
+                        finishedJobCount, totalJobCount, progress,
+                        activeJobCount, averageJobDurationInMinutes))
+    print("Time running: " .. runTime)
+
+    local jobs = {}
+    for job, started in pairs(jobData.activeJobs) do
+        local running = now - started
+        local remaining = averageJobDuration - running
+        if averageJobDuration == 0 then
+            remaining = ""
+        elseif remaining < -averageJobDuration then
+            remaining = "AWOL"
+        --elseif remaining <= 0 then
+        --    remaining = "Soon (TM)"
+        else
+            local seconds = math.floor(remaining / 20)
+            if math.abs(seconds) < 60 then
+                remaining = seconds .. "s"
+            else
+                local negative = seconds < 0
+                local minutes = math.floor(math.abs(seconds) / 60)
+                seconds = math.abs(seconds) % 60
+                if negative then
+                    minutes = -minutes
+                end
+                remaining = string.format("%02d:%02d", minutes, seconds)
+            end
+        end
+        local x, z = computeCoordinates(job)
+        table.insert(jobs, {job, string.format("%3d (%3d,%3d) %s", job, x, z, remaining)})
+    end
+    table.sort(jobs, function(a, b) return a[1] < b[1] end)
+    for i = 1, #jobs do
+        jobs[i] = jobs[i][2]
+    end
+    if #jobs > 0 then
+        print(textutils.tabulate(jobs))
+    end
+end
+
+--[[
+    Drives the status printing message to run regularly.
+]]
+local function updateTextThread()
+    while true do
+        if jobData then
+            pcall(updateText)
+        end
+        os.sleep(1)
+    end
+end
+
+--[[
+    This function prints the job map to all attached monitors.
+]]
+local function updateMap()
+    if not jobData or not jobData.activeJobs then
+        return
+    end
+    local size = math.sqrt(jobData.totalJobs) * 3 + 2
+    for _, side in ipairs(peripheral.getNames()) do
+        if peripheral.isPresent(side) and
+           peripheral.getType(side) == "monitor"
+        then
+            local m = peripheral.wrap(side)
+            m.clear()
+            m.setCursorPos(1, 1)
+            m.setTextScale(0.5)
+            local w, h = m.getSize()
+            local scale = math.min(w / size, h / size)
+            local ox, oy = w / 2, h / 2
+
+            for i = 1, jobData.totalJobs do
+                local jx, jz = computeCoordinates(i)
+                jx = math.floor(ox + jx * scale)
+                jz = math.floor(oy + jz * scale)
+                m.setCursorPos(jx, jz)
+                m.write("-")
+            end
+
+            for i = 1, jobData.nextJob - 1 do
+                local jx, jz = computeCoordinates(i)
+                jx = math.floor(ox + jx * scale)
+                jz = math.floor(oy + jz * scale)
+                m.setCursorPos(jx, jz)
+                m.write("+")
+            end
+
+            for job, _ in pairs(jobData.activeJobs) do
+                local jx, jz = computeCoordinates(job)
+                jx = math.floor(ox + jx * scale)
+                jz = math.floor(oy + jz * scale)
+                m.setCursorPos(jx, jz)
+                m.write("X")
+            end
+
+            m.setCursorPos(ox, oy)
+            m.write("O")
+
+            os.sleep(1)
+        end
+    end
+end
+
+--[[
+    Drives the map printing message to run regularly.
+]]
+local function updateMapThread()
+    while true do
+        if jobData then
+            pcall(updateMap)
+        end
+        os.sleep(5)
+    end
+end
+
+parallel.waitForAll(updateDataThread, updateTextThread, updateMapThread)

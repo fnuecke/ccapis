@@ -310,14 +310,43 @@ end)
     assert(disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide),
         "Bad setup detected, no disk in disk drive behind me!")
 
-    -- Get the current job information and try to get a new job.
+    -- Returns a timestamp based on the ingame time (in ticks).
+    local function timestamp()
+        return (os.day() * 24 + os.time()) * 1000
+    end
+
+    -- Get the current job information.
     local jobData = private.readJobData()
+
+    -- If we finished a job, clear it from the list of active jobs.
+    if finishedJob and jobData.activeJobs and
+       jobData.activeJobs[finishedJob]
+    then
+        -- Remember how long the last couple of jobs took to finish. This is
+        -- useful for predicting when an active job has taken an unexpectedly
+        -- long time and may require the player's investigation (via some
+        -- stationary computer attached to the disk drive for example).
+        local started = jobData.activeJobs[finishedJob]
+        local finished = timestamp()
+        local duration = finished - started
+        jobData.jobDurations = jobData.jobDurations or {}
+        table.insert(jobData.jobDurations, 1, duration)
+        if #jobData.jobDurations > 10 then
+            table.remove(jobData.jobDurations)
+        end
+        jobData.activeJobs[finishedJob] = nil
+        finishedJob = nil
+    end
+
+    -- Try to get a new job.
     local nextJob = jobData.nextJob or 1
     if nextJob <= jobData.totalJobs then
         job = nextJob
+        jobData.activeJobs = jobData.activeJobs or {}
+        jobData.activeJobs[job] = timestamp()
         jobData.nextJob = job + 1
         if job == 1 then
-            jobData.startTime = (os.day() * 24 + os.time()) * 1000
+            jobData.startTime = timestamp()
         end
         switchTo("refuel_job")
         log:info("Got one! Our new job ticket is #%d.", job)
@@ -325,7 +354,7 @@ end)
     else
         endSlot = jobData.finished or 0
         jobData.finished = endSlot + 1
-        jobData.stopTime = (os.day() * 24 + os.time()) * 1000
+        jobData.stopTime = timestamp()
         switchTo("refuel_end")
     end
 
@@ -625,6 +654,7 @@ end)
         assert(lama.up(math.huge, true), "Unexpected unbreakable block.")
     end
 
+    finishedJob = job
     groundLevel = nil
     placeIgnoredLevel = nil
     ignoredLookup = nil
@@ -895,12 +925,16 @@ function private.setupDigSite()
         -- pretty much the same we do here, in reverse.
         {content = string.format(
 [=[-- Ignore anything that isn't a turtle.
-if not turtle then return shell.run("/startup") end
+if not turtle then
+    return fs.exists("/startup") and shell.run("/startup")
+end
 
 -- Ignore if we're on the wrong side. Otherwise get the mount path of the disk.
 local diskSide = %q
 local diskPath = disk.getMountPath(diskSide)
-if not disk.isPresent(diskSide) then return shell.run("/startup") end
+if not disk.isPresent(diskSide) then
+    return fs.exists("/startup") and shell.run("/startup")
+end
 
 -- Update the environment, copy APIs, create startup file, that kind of stuff.
 print("Updating JAM installation...")

@@ -138,8 +138,7 @@ local program = state.new(stateFile)
     if not disk.isPresent(rsDiskSide) or not disk.getMountPath(rsDiskSide) then
         lama.turn((diskSide + 2) % 4)
     end
-    private.waitForDiskDrive(0.5)
-    if not disk.isPresent(rsDiskSide) or not disk.getMountPath(rsDiskSide) then
+    if not private.waitForDiskDrive(0.5) then
         return private.showBlueprint()
     end
 
@@ -152,6 +151,7 @@ local program = state.new(stateFile)
     assert(not fs.exists(jobFileDisk) or not fs.isDir(jobFileDisk),
         "Bad disk, folder at job file location.")
     if not fs.exists(jobFileDisk) then
+        assert(shell, "Setup must be run from the shell.")
         local jobCount, placeTorches,
               placeIgnored, haveIgnoreChest = private.setupDigSite()
         if jobCount == nil then
@@ -249,8 +249,10 @@ end)
     private.select(1)
     local x, y, z = lama.get()
     local path = private.generatePath(x, y, z, 0, 0, 0, "home")
-    assert(lama.navigate(path, math.huge, true),
-        "Unexpected unbreakable block.")
+    private.forceMove("goto_drop", function()
+        return lama.navigate(path, math.huge, true)
+    end)
+
     switchTo("drop")
 end)
 
@@ -293,6 +295,16 @@ end)
         switchTo("refuel_job")
     else
         switchTo("get_job")
+        -- Turn back to original orientation.
+        lama.turn((diskSide + 2) % 4)
+        -- We reboot before each job because this way the Lua VM gets a proper
+        -- cleaning (not sure if that's what caused it, but running multiple
+        -- turtles for extended periods made my worlds crash), and because I
+        -- had a weird bug where the turtle would otherwise not see the disk
+        -- inside the disk drive until either rebooted forcefully, or I opened
+        -- the menu, shortly. Yes. I know. Totally insane, but 99% reproducible
+        -- in that one world.
+        os.reboot()
     end
 end)
 
@@ -305,9 +317,7 @@ end)
     private.sendMessage("state", "get_job")
 
     -- Make sure the disk drive is behind us.
-    lama.turn((diskSide + 2) % 4)
-    private.waitForDiskDrive(5)
-    assert(disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide),
+    assert(private.waitForDiskDrive(5),
         "Bad setup detected, no disk in disk drive behind me!")
 
     -- Returns a timestamp based on the ingame time (in ticks).
@@ -400,8 +410,9 @@ end)
     private.select(1)
     local x, y, z = lama.get()
     local path = private.generatePath(x, y, z, tx, jobLevel, tz, "job")
-    assert(lama.navigate(path, math.huge, true, true),
-        "Unexpected unbreakable block.")
+    private.forceMove("goto_job", function()
+        return lama.navigate(path, math.huge, true, true) 
+    end)
 
     if resumeDigUp then
         switchTo("dig_up")
@@ -651,7 +662,9 @@ end)
         end
 
         private.select(1)
-        assert(lama.up(math.huge, true), "Unexpected unbreakable block.")
+        private.forceMove("dig_up", function()
+            return lama.up(math.huge, true)
+        end)
     end
 
     finishedJob = job
@@ -705,8 +718,10 @@ end)
 
     local x, y, z = lama.get()
     local path = private.generatePath(x, y, z, 0, 2, endSlot, "end")
-    assert(lama.navigate(path, math.huge, true),
-        "Unexpected unbreakable block.")
+    private.forceMove("goto_end", function()
+        return lama.navigate(path, math.huge, true)
+    end)
+
     switchTo("end")
 end)
 
@@ -717,9 +732,12 @@ end)
     log:info("That's it, I'm going to end it right here. It was a nice life.")
     private.sendMessage("state", "end")
 
-    assert(lama.moveto(1, 2, endSlot, lama.side.north, math.huge, true),
-        "Unexpected unbreakable block.")
+    private.forceMove("end", function()
+        return lama.moveto(1, 2, endSlot, lama.side.north, math.huge, true)
+    end)
+
     startup.disable("jam")
+
     switchTo(nil)
 end)
 
@@ -926,14 +944,14 @@ function private.setupDigSite()
         {content = string.format(
 [=[-- Ignore anything that isn't a turtle.
 if not turtle then
-    return fs.exists("/startup") and shell.run("/startup")
+    return fs.exists("/startup") and dofile("/startup")
 end
 
 -- Ignore if we're on the wrong side. Otherwise get the mount path of the disk.
 local diskSide = %q
 local diskPath = disk.getMountPath(diskSide)
 if not disk.isPresent(diskSide) then
-    return fs.exists("/startup") and shell.run("/startup")
+    return fs.exists("/startup") and dofile("/startup")
 end
 
 -- Update the environment, copy APIs, create startup file, that kind of stuff.
@@ -958,14 +976,18 @@ local install = {
      to   = "/apis/startup"},
     {from = fs.combine(diskPath, "apis/state"),
      to   = "/apis/state"},
+    {from = fs.combine(diskPath, "programs/jam"),
+     to   = "/programs/jam"},
     {content =
 [[if startup then return false end
 os.loadAPI("apis/bapil")
 bapil.hijackOSAPI()
+shell.setPath(shell.path() .. ":/programs")
 assert(os.loadAPI("apis/stacktrace"))
 _G.pcall = stacktrace.tpcall
 assert(os.loadAPI("apis/startup"))
-return startup.run()]],
+-- Avoid tail-recursion optimization removing our environment from the stack.
+return startup.run() and true or false]],
      to = "/startup", keep = true}
 }
 
@@ -1040,12 +1062,9 @@ if not dofile("/startup") then return false end
 assert(startup, "Bad installation, startup API not loaded automatically.")
 
 -- Overwrite this program in case of updates (different file size).
-local jamFile = fs.combine(diskPath, "programs/jam")
-if not startup.isEnabled("jam") or
-   areDifferent(startup.scriptPath("jam"), jamFile)
-then
+if not startup.isEnabled("jam") then
     startup.remove("jam")
-    startup.addFile("jam", 20, jamFile)
+    startup.addFile("jam", 20, "programs/jam")
     print("Done installing JAM, rebooting...")
     os.sleep(1)
     os.reboot()
@@ -1275,6 +1294,8 @@ function private.setupIgnoredBlocksFromIgnoreChest()
     lama.turn(torchSide)
     private.select(1)
 
+    assert(turtle.detect(), "Chest with ignored blocks disappeared!")
+
     -- If we're resuming in here, it means we only have stuff we're supposed
     -- to ignore in our inventory. Dump it back and start over.
     for slot = 1, 16 do
@@ -1435,16 +1456,13 @@ end
     Resets the disk and program and removes our startup script.
 ]]
 function private.reset()
+    program:reset()
+    startup.remove("jam")
     if not disk.isPresent(rsDiskSide) or not disk.getMountPath(rsDiskSide) then
         lama.turn((diskSide + 2) % 4)
     end
     private.waitForDiskDrive(0.5)
-    if not private.formatDisk() then
-        return false
-    end
-    program:reset()
-    startup.remove("jam")
-    return true
+    return private.formatDisk()
 end
 
 -------------------------------------------------------------------------------
@@ -1631,10 +1649,11 @@ function private.waitForDiskDrive(secondsToWait)
     -- Try for a total of five seconds, so lag is a non-issue.
     for i = 1, secondsToWait * 10 do
         if disk.isPresent(rsDiskSide) and disk.getMountPath(rsDiskSide) then
-            break
+            return true
         end
         os.sleep(0.1)
     end
+    return false
 end
 
 function private.readJobData()
@@ -1728,6 +1747,27 @@ function private.computeIgnoreOrder(ignoreCount, ignoreSamples)
     return private.orderedIgnoreSlots
 end
 
+--[[
+    Used to repeat a move until it succeeds. This *should* be unnecessary. I'm
+    pretty sure I fixed LAMA up so that this it cannot happen, unless there's
+    really an unbreakable block in our way all of a sudden (player placed?).
+    But you just never know, so let's just keep trying hard...
+]]
+function private.forceMove(where, move)
+    repeat
+        local success, reason = move()
+        if not success then
+            log:warn("%s: unexpectedly couldn't move (%s)", where, reason)
+            -- This really shouldn't happen ever anyway, but if it does, don't
+            -- spam too hard.
+            os.sleep(30)
+        end
+    until success
+end
+
+--[[
+    -- Digs out a level either on the way up or down.
+]]
 function private.digLevel(ignoreCount, ignoreSamples, goingDown)
     -- Dig out two sides each while going down and up. Minimize turns by
     -- alternating the order between even and odd levels.
@@ -1792,6 +1832,7 @@ function private.drop(slot, keep)
     local didLogFull = false
     while turtle.getItemCount(slot) > keep do
         lama.turn(dropSide)
+        assert(turtle.detect(), "The dropbox disappeared!")
         private.select(slot)
         if not turtle.drop(turtle.getItemCount(slot) - keep) then
             private.sendMessage("full", "The drop chest is full!")
@@ -1816,6 +1857,7 @@ function private.refuel(needed, ignoreCount)
         private.select(fuelSlot)
         if turtle.getItemCount(fuelSlot) == 0 then
             lama.turn(fuelSide)
+            assert(turtle.detect(), "The fuel chest disappeared!")
             if not turtle.suck() then
                 private.sendMessage("fuel", "We're all out fuel!")
                 if not didLogNoFuel then
@@ -1863,6 +1905,7 @@ function private.restockTorches(ignoreCount)
             private.drop(tempSlot)
         end
         lama.turn(torchSide)
+        assert(turtle.detect(), "The torch chest disappeared!")
         -- At this point we can be sure that if there's something in our temp
         -- slot it's torches, so use them up first, before sucking up more.
         if turtle.getItemCount(tempSlot) > 0 or turtle.suck() then

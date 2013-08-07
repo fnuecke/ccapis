@@ -75,6 +75,30 @@ local function computeCoordinates(n)
     return x * 2 - y, y * 2 + x
 end
 
+local function formatTime(time)
+    local result
+    local seconds = math.floor(time / 20)
+    local negative = seconds < 0
+    seconds = math.abs(seconds)
+    if seconds < 60 then
+        result = seconds .. "s"
+    else
+        local minutes = math.floor(seconds / 60)
+        seconds = seconds % 60
+        if minutes < 60 then
+            result = string.format("%02d:%02d", minutes, seconds)
+        else
+            local hours = math.floor(minutes / 60)
+            minutes = minutes % 60
+            result = string.format("%d:%02d:%02d", hours, minutes, seconds)
+        end
+    end
+    if negative then
+        result = "-" .. result
+    end
+    return result
+end
+
 -- Global job data variable, updated in data updater thread.
 local jobData
 
@@ -95,9 +119,7 @@ end
     This function prints status information to the terminal.
 ]]
 local function updateText()
-    term.clear()
-    term.setCursorPos(1, 1)
-
+    local totalJobCount = jobData.totalJobs
     local activeJobCount = 0
     if jobData.activeJobs then
         for _, _ in pairs(jobData.activeJobs) do
@@ -105,48 +127,36 @@ local function updateText()
         end
     end
     local finishedJobCount = (jobData.nextJob or 1) - 1 - activeJobCount
-    local totalJobCount = jobData.totalJobs
     local progress = math.floor(finishedJobCount / totalJobCount * 100)
 
+    local now = (os.day() * 24 + os.time()) * 1000
+    local startTime = jobData.startTime or now
+    local stopTime = activeJobCount == 0 and jobData.stopTime or now
+    local elapsedTime = stopTime - startTime
     local averageJobDuration = 0
     if jobData.jobDurations then
         for _, duration in ipairs(jobData.jobDurations) do
             averageJobDuration = averageJobDuration + duration
         end
-        averageJobDuration = averageJobDuration / #jobData.jobDurations
+        averageJobDuration = averageJobDuration / (#jobData.jobDurations + 1)
     end
+    -- Estimating remaining time: get the number of jobs left and get the total
+    -- time a single turtle would spend finishing them, below divide it by the
+    -- number of currently active turtles (jobs being worked on).
+    local remainingTime = (totalJobCount - finishedJobCount) * averageJobDuration
+    -- Since the above does include the jobs we're currently working on, we
+    -- subtract the the time we already spent on those jobs.
+    for _, started in pairs(jobData.activeJobs) do
+        remainingTime = remainingTime - (now - started)
+    end
+    remainingTime = remainingTime / (activeJobCount or 1)
+
     local averageJobDurationInMinutes
     if averageJobDuration == 0 then
         averageJobDurationInMinutes = "N/A"
     else
         averageJobDurationInMinutes = math.ceil(averageJobDuration / 1200) .. "m"
     end
-
-    local now = (os.day() * 24 + os.time()) * 1000
-    local startTime = jobData.startTime or now
-    local stopTime = jobData.stopTime or now
-    local runTime
-    do
-        local seconds = math.floor((stopTime - startTime) / 20)
-        if seconds < 60 then
-            runTime = seconds .. "s"
-        else
-            local minutes = math.floor(seconds / 60)
-            seconds = seconds % 60
-            if minutes < 60 then
-                runTime = string.format("%02d:%02d", minutes, seconds)
-            else
-                local hours = math.floor(minutes / 60)
-                minutes = minutes % 60
-                runTime = string.format("%d:%02d:%02d", hours, minutes, seconds)
-            end
-        end
-    end
-
-    print(string.format("Jobs: %d/%d (%d%%) / Active: %d / Average: %s",
-                        finishedJobCount, totalJobCount, progress,
-                        activeJobCount, averageJobDurationInMinutes))
-    print("Time running: " .. runTime)
 
     local jobs = {}
     for job, started in pairs(jobData.activeJobs) do
@@ -156,21 +166,8 @@ local function updateText()
             remaining = ""
         elseif remaining < -averageJobDuration then
             remaining = "AWOL"
-        --elseif remaining <= 0 then
-        --    remaining = "Soon (TM)"
         else
-            local seconds = math.floor(remaining / 20)
-            if math.abs(seconds) < 60 then
-                remaining = seconds .. "s"
-            else
-                local negative = seconds < 0
-                local minutes = math.floor(math.abs(seconds) / 60)
-                seconds = math.abs(seconds) % 60
-                if negative then
-                    minutes = -minutes
-                end
-                remaining = string.format("%02d:%02d", minutes, seconds)
-            end
+            remaining = formatTime(remaining)
         end
         local x, z = computeCoordinates(job)
         table.insert(jobs, {job, string.format("%3d (%3d,%3d) %s", job, x, z, remaining)})
@@ -179,6 +176,14 @@ local function updateText()
     for i = 1, #jobs do
         jobs[i] = jobs[i][2]
     end
+
+    term.clear()
+    term.setCursorPos(1, 1)
+    print(string.format("Jobs: %d/%d (%d%%) / Active: %d / Average: %s",
+                        finishedJobCount, totalJobCount, progress,
+                        activeJobCount, averageJobDurationInMinutes))
+    print(string.format("Time running: %s / Remaining: %s",
+                        formatTime(elapsedTime), formatTime(remainingTime)))
     if #jobs > 0 then
         print(textutils.tabulate(jobs))
     end
@@ -203,7 +208,11 @@ local function updateMap()
     if not jobData or not jobData.activeJobs then
         return
     end
-    local size = math.sqrt(jobData.totalJobs) * 3 + 2
+    -- Because we use characters to draw, which are higher than wide, we
+    -- stretch the map a bit into the width to correct for that.
+    local aspectRatio = 5 / 8
+    local sizeX = math.sqrt(jobData.totalJobs) * 3 + 1
+    local sizeZ = sizeX * aspectRatio
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.isPresent(side) and
            peripheral.getType(side) == "monitor"
@@ -213,13 +222,13 @@ local function updateMap()
             m.setCursorPos(1, 1)
             m.setTextScale(0.5)
             local w, h = m.getSize()
-            local scale = math.min(w / size, h / size)
+            local scale = math.min(w / sizeX, h / sizeZ)
             local ox, oy = w / 2, h / 2
 
             for i = 1, jobData.totalJobs do
                 local jx, jz = computeCoordinates(i)
                 jx = math.floor(ox + jx * scale)
-                jz = math.floor(oy + jz * scale)
+                jz = math.floor(oy + jz * scale * aspectRatio)
                 m.setCursorPos(jx, jz)
                 m.write("-")
             end
@@ -227,7 +236,7 @@ local function updateMap()
             for i = 1, jobData.nextJob - 1 do
                 local jx, jz = computeCoordinates(i)
                 jx = math.floor(ox + jx * scale)
-                jz = math.floor(oy + jz * scale)
+                jz = math.floor(oy + jz * scale * aspectRatio)
                 m.setCursorPos(jx, jz)
                 m.write("+")
             end
@@ -235,7 +244,7 @@ local function updateMap()
             for job, _ in pairs(jobData.activeJobs) do
                 local jx, jz = computeCoordinates(job)
                 jx = math.floor(ox + jx * scale)
-                jz = math.floor(oy + jz * scale)
+                jz = math.floor(oy + jz * scale * aspectRatio)
                 m.setCursorPos(jx, jz)
                 m.write("X")
             end

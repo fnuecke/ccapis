@@ -54,7 +54,7 @@ local private
 -------------------------------------------------------------------------------
 
 -- The current version of the API.
-version = "1.2"
+version = "1.3"
 
 --[[
     Adds a new startup script with the specified priority by copying the
@@ -80,7 +80,11 @@ function addFile(name, priority, path)
         return false, "script with that name already exists"
     end
 
-    fs.copy(path, fs.combine(startupPath, priority .. "_" .. name))
+    local scriptPath = fs.combine(startupPath, priority .. "_" .. name)
+    local file = assert(fs.open(scriptPath, "w"),
+        "Could not open startup script file for writing")
+    file.write(string.format("shell.run(%q)", path))
+    file.close()
     return true
 end
 
@@ -317,7 +321,7 @@ function run()
             if result then
                 -- Give each script its own environment so they do not
                 -- interfere with each other, then do a protected call.
-                setfenv(result, setmetatable({shell = shell}, {__index = _G}))
+                setfenv(result, setmetatable({}, {__index = getfenv(2)}))
                 result, message = pcall(result)
             end
             -- Check if we had an error, if so, depending on our configuration,

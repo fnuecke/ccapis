@@ -987,7 +987,7 @@ assert(os.loadAPI("apis/stacktrace"))
 _G.pcall = stacktrace.tpcall
 assert(os.loadAPI("apis/startup"))
 -- Avoid tail-recursion optimization removing our environment from the stack.
-return startup.run() and true or false]],
+return startup.run() or false]],
      to = "/startup", keep = true}
 }
 

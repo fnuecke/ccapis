@@ -828,7 +828,7 @@ function private.setupDigSite()
     repeat
         local rx, ry = term.getCursorPos()
         radius = size * 3
-        chunks = math.ceil(radius / 8)
+        chunks = math.ceil(radius / 16)
         chunks = chunks * chunks
         jobCount = private.computeJobCount(radius)
         term.setCursorPos(1, y)

@@ -938,6 +938,8 @@ function private.setupDigSite()
          to   = fs.combine(diskPath, "apis/state")},
         {from = shell.getRunningProgram(),
          to   = fs.combine(diskPath, "programs/jam")},
+        {from = "programs/jam-status",
+         to   = fs.combine(diskPath, "programs/jam-status")},
         -- We write a startup file to the disk drive that will install our
         -- environment to any new turtles started up in front of it. This is
         -- pretty much the same we do here, in reverse.

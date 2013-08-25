@@ -1,4 +1,17 @@
 --[[
+
+    IMPORTANT: don't use this program. Aside from the fact that it may be broken
+    according to some people, ComputerCraft has currently a bug that can deadlock
+    the game when a turtle moves next to a disk drive. And that happens a lot with
+    JAM. Turtles moving next to a disk drive, I mean. So the chances are actually
+    pretty high for this to happen. Trust me, it does happen.
+
+]]
+
+print("Unusable due to a CC bug as it stands (CC 1.56). Remove this code line to use it anyway at your own peril.") return
+
+
+--[[
     JAM - Just Another Miner - 2013 Sangar
 
     This program is licensed under the MIT license.

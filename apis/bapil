@@ -111,10 +111,7 @@ function loadAPI(path, timeout)
         end
 
         local api
-        if retval and type(retval) == "table" then
-            -- If the script returns table, use it as api.
-            api = retval
-        else
+        if retval == nil then
             -- Great! Set the environment as the API's entry. Since os.loadAPI
             -- copies all entries to a new table we do this here, too, though I
             -- don't really see the point (but this ignores the tables metatable,
@@ -123,7 +120,28 @@ function loadAPI(path, timeout)
             for k, v in pairs(environment) do
                 api[k] = v
             end
+
+        elseif type(retval) == "table" then
+            -- If the script returns table, use it as api.
+            api = retval
+
+        elseif type(retval) == "function" then
+            -- As api can be only table, let's wrap returned function to table
+            -- with metatable.
+            api = {}
+            api[name] = retval
+            setmetatable(api, {
+                __call = function (_, ...)
+                    return retval(...)
+                end
+            })
+
+        else
+            result = false
+            reason = "attempt use " .. type(retval) .. " as api"
+            return
         end
+
         _G[name] = api
 
         if type(api) == "table" then

@@ -101,22 +101,39 @@ function loadAPI(path, timeout)
         end
 
         -- Try to execute the script. This can yield.
-        local environment = {}
+        local environment = {__bapil__ = true}
+        local retval
         setfenv(result, setmetatable(environment, {__index = _G}))
-        result, reason = pcall(result)
+        result, retval = pcall(result)
         if not result then
+            reason = retval
             return
         end
 
-        -- Great! Set the environment as the API's entry. Since os.loadAPI
-        -- copies all entries to a new table we do this here, too, though I
-        -- don't really see the point (but this ignores the tables metatable,
-        -- so we'd get different behavior if we skip this, which would be bad).
-        local api = {}
-        for k, v in pairs(environment) do
-            api[k] = v
+        local api
+        if retval and type(retval) == "table" then
+            -- If the script returns table, use it as api.
+            api = retval
+        else
+            -- Great! Set the environment as the API's entry. Since os.loadAPI
+            -- copies all entries to a new table we do this here, too, though I
+            -- don't really see the point (but this ignores the tables metatable,
+            -- so we'd get different behavior if we skip this, which would be bad).
+            api = {}
+            for k, v in pairs(environment) do
+                api[k] = v
+            end
         end
         _G[name] = api
+
+        if type(api) == "table" then
+            -- If api has __load__ function, call it with the global environment.
+            local __load__ = api.__load__
+            if __load__ then
+                setfenv(__load__, _G)
+                __load__()
+            end
+        end
     end)()
 
     -- Done loading the API. Release lock.
@@ -130,7 +147,19 @@ end
     @param the path to or name of the API to unload.
 ]]
 function unloadAPI(path)
-    os.unloadAPI(fs.getName(path))
+    local name = fs.getName(path)
+    local api = _G[name]
+
+    if api and type(api) == "table" then
+        -- If api has __unload__ function, call it with the global environment.
+        local __unload__ = api.__unload__
+        if __unload__ then
+            setfenv(__unload__, _G)
+            __unload__()
+        end
+    end
+
+    os.unloadAPI(name)
 end
 
 --[[
